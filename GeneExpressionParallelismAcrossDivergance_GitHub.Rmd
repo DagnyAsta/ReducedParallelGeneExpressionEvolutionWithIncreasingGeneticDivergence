@@ -1,0 +1,2702 @@
+---
+title: "GeneExpressionParalellismAcrossDiveregence"
+output: html_document
+date: "2023-01-20"
+author: "Dagny A.V. Thorholludottir and Sheng-Kai Hsu"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Prepare environment
+Load required libraries and source functions
+
+## Clean environment
+
+```{r}
+rm(list=ls()) 
+```
+
+## Load package
+
+```{r, results = F, message=FALSE}
+library(edgeR)
+library(pheatmap)
+library(grid)
+library(ggpubr)
+library(biomaRt)
+library(topGO)
+#library(RcisTarget)
+#library(VennDiagram)
+library(cluster)
+#library(fpc)
+#library(MESS)
+#library(dendextend)
+library(ggplot2)
+#library(ggfortify)
+library(cowplot)   # get_legend() & plot_grid() functions
+#library(patchwork) # blank plot: plot_spacer()
+library(stringr)
+library(Rmisc)
+library(GO.db)
+#library(shades)
+library(RColorBrewer)
+library(gtools)
+library(dbplyr)
+library(viridis)
+library(ggsignif)
+library(data.table)
+library(dplyr)
+```
+
+## Load and source functions
+
+```{r, results = F, message=FALSE}
+
+#Function to create count tables to perform Fisher's exact test
+cont_table=function(query,background,classifyer){
+  p1=length(intersect(query,classifyer))
+  q1=length(query)-p1
+  p0=length(setdiff(intersect(background,classifyer),intersect(query,classifyer)))
+  q0=length(setdiff(background,query))-p0
+  return(matrix(c(p1,p0,q1,q0),2,2))
+}
+
+#Convert ID's
+ID_converter=function(ID,db,attributes,filters){
+  getBM(attributes=attributes,filters=filters,mart=db,values=ID)
+}
+
+#Plot correlation of many comparisons
+cor_display=function(x,y,...) {
+  text(0,0,labels=round(cor(x,y,method = "pearson"),2),cex=1.5,...)
+}
+scatter.plot=function(x,y,...){
+  points(x,y,asp=1,pch=19)
+  abline(0,1,col="blue")
+  abline(0,-1,col="blue")
+  abline(v=0,col="blue")
+  abline(h=0,col="blue")
+}
+
+#To plot normalized expression values of individuals genes
+#source("plotGene.R")
+
+#Fisher's exact test function
+test_f_odds <- function(x,y) return(fisher.test(cont_table(x,background = 1:length(rownames(flores_list$evo_r1)),y),alternative = "greater")$estimate)
+test_f_p <- function(x,y) return(fisher.test(cont_table(x,background = 1:length(rownames(flores_list$evo_r1)),y),alternative = "greater")$p.value)
+
+#takes the possibility of up and down regulation into account in one test, in stead of performing two tests
+test_f_odds_dir <- function(x,y) return(fisher.test(cont_table(x,background=c(paste(1:length(rownames(flores_list$evo_r1)), "Down", sep = "_"), paste(1:length(rownames(flores_list$evo_r1)), "Up", sep = "_")),y),alternative = "greater")$estimate)
+test_f_p_dir <- function(x,y) return(fisher.test(cont_table(x,background=c(paste(1:length(rownames(flores_list$evo_r1)), "Down", sep = "_"), paste(1:length(rownames(flores_list$evo_r1)), "Up", sep = "_")),y),alternative = "greater")$p.value)
+
+```
+
+# RNA-seq data input and filtering
+
+## Within population
+
+```{r}
+#The D. sim Florida population which is sub-replicated
+florcount_use <- read.csv("../data/IntersectedCountTables/InterIntraIntersect_monster_fullset_readcounts.csv",
+                          stringsAsFactors = F,row.names = 1)
+evoPop <- substr(colnames(florcount_use), 1,1)
+repPop <- as.numeric(substr(colnames(florcount_use), 7,8))
+repPop[repPop > 10] <- 0
+repPop <- as.factor(repPop)
+evoRep <- paste(evoPop, repPop, sep = "_r")
+yFlor=DGEList(counts=florcount_use,group = evoRep)
+yFlor=calcNormFactors(yFlor)
+```
+
+## Between populations
+
+```{r}
+#The three D. sim populations
+raw_counts_use=read.csv("../data/IntersectedCountTables/InterIntraIntersect_Int_fullset_readcounts_filtered.csv",
+                        stringsAsFactors = F,row.names = 1)
+pop=substr(colnames(raw_counts_use),1,2)
+evo=substr(colnames(raw_counts_use),4,4)
+group=paste(evo,pop,sep = "_")
+y=DGEList(counts=raw_counts_use,group = group)
+y=calcNormFactors(y)
+
+```
+
+
+## Between species
+Now the two species representing the most diverged comparison
+### D. simulans
+
+```{r}
+
+simcounts_use = read.csv("../data/IntersectedCountTables/InterIntraIntersect_countedreads_togenes.csv", 
+                         header = T, stringsAsFactors=F,row.names = 1) #read the count table
+simevo=str_sub(colnames(simcounts_use),1,-3) #make a variable vector
+simy2=DGEList(counts=simcounts_use,group = simevo) #make a list were the count table and the variable vector are combined
+simy2=calcNormFactors(simy2) #normalisation factors calculated
+
+```
+
+
+### D. melanogaster 
+
+```{r}
+
+melcounts_use = read.csv("../data/IntersectedCountTables/InterIntraIntersect_Portugal_Dmel_readcounts_r5.49.csv", header = T, stringsAsFactors=F,row.names = 1)
+melevo=rep(c("hot","base"),5) 
+mely2=DGEList(counts=melcounts_use,group = melevo)
+mely2=calcNormFactors(mely2)
+
+```
+
+### counts per dataset
+```{r}
+
+mean(c(colSums(raw_counts_use), colSums(florcount_use), colSums(simcounts_use), colSums(melcounts_use)))
+
+max(c(colSums(raw_counts_use), colSums(florcount_use), colSums(simcounts_use), colSums(melcounts_use)))
+
+min(c(colSums(raw_counts_use), colSums(florcount_use), colSums(simcounts_use), colSums(melcounts_use)))
+```
+
+# PCA
+
+## Within population
+
+```{r}
+pca=(prcomp(t(log(cpm(yFlor)))))
+pcaPlot=as.data.frame(pca$x)
+pcaPlot$evolution=evoPop
+pcaPlot$replicate=evoRep
+ve=pca$sdev^2/sum(pca$sdev^2)
+A <- ggplot(pcaPlot, aes(x = PC1, y = PC2)) +
+  geom_point(aes(shape=evolution, color=replicate),size = 4) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 12)[c(1:5,7:12)]) +
+  scale_shape_manual(
+    labels = c("Ancestor", "Evolved"), 
+    values = c(15,19)) +
+  xlab(paste0("PC1 (",round(ve[1]*100,2),"%)")) +
+  ylab(paste0("PC2 (",round(ve[2]*100,2),"%)")) +
+  theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15)) +
+  ggtitle("A")
+A
+```
+
+## Between populations
+```{r}
+pca=(prcomp(t(log(cpm(y)))))
+pcaPlot=as.data.frame(pca$x)
+pcaPlot$evolution=evo
+pcaPlot$population=pop
+ve=pca$sdev^2/sum(pca$sdev^2)
+B <- ggplot(pcaPlot, aes(x = PC1, y = PC2)) +
+  geom_point(aes(shape=evolution, color=population),size = 4) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 4)[c(1,2,4)]) +
+  scale_shape_manual(
+    labels = c("Ancestor", "Evolved"), 
+    values = c(15,19)) +
+  xlab(paste0("PC1 (",round(ve[1]*100,2),"%)")) +
+  ylab(paste0("PC2 (",round(ve[2]*100,2),"%)")) +
+  theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15)) +
+  ggtitle("B")
+B
+```
+
+## Between species
+
+As the libraries for the two species was not sequenced under the same lot number, there might be technical differences tight to the biological grouping. Hence, they will be analysed seperatly
+
+### D. simulans
+
+```{r}
+pca=(prcomp(t(log(cpm(simy2)))))
+pcaPlot=as.data.frame(pca$x)
+pcaPlot$evolution=simevo
+ve=pca$sdev^2/sum(pca$sdev^2)
+C <- ggplot(pcaPlot, aes(x = PC1, y = PC2)) +
+  geom_point(aes(shape=evolution, color=species),size = 4) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 4)[c(1)]) +
+  scale_shape_manual(
+    labels = c("Ancestor", "Evolved"), 
+    values = c(15,19)) +
+  xlab(paste0("PC1 (",round(ve[1]*100,2),"%)")) +
+  ylab(paste0("PC2 (",round(ve[2]*100,2),"%)")) +
+  theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15)) +
+  ggtitle("C")
+C
+```
+
+
+### D. melanogaster
+```{r}
+pca=(prcomp(t(log(cpm(mely2)))))
+pcaPlot=as.data.frame(pca$x)
+pcaPlot$evolution=melevo
+ve=pca$sdev^2/sum(pca$sdev^2)
+D <- ggplot(pcaPlot, aes(x = PC1, y = PC2)) +
+  geom_point(aes(shape=evolution, color=species),size = 4, color = viridis(n=2)[2]) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  #scale_color_manual(
+  #  labels = pop, 
+  #  values = viridis(n=2)[1]) +
+  scale_shape_manual(
+    labels = c("Ancestor", "Evolved"), 
+    values = c(15,19)) +
+  xlab(paste0("PC1 (",round(ve[1]*100,2),"%)")) +
+  ylab(paste0("PC2 (",round(ve[2]*100,2),"%)")) +
+  theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15)) +
+  ggtitle("D")
+D
+```
+
+
+### Plot both species togeather
+
+
+```{r}
+
+bothSpeciescountUse <- cbind(simcounts_use, melcounts_use)
+bothSpeciesEvo <- c(simevo, melevo)
+bothSpeciesSpe <- c(rep("Dsim", length(simevo)), rep("Dmel", length(melevo)))
+bothSpeciesGroup <- paste(bothSpeciesSpe, bothSpeciesEvo, sep = "_")             
+
+ybothSpecies=DGEList(counts=bothSpeciescountUse,group = bothSpeciesGroup)
+ybothSpecies=calcNormFactors(ybothSpecies)
+
+
+pca=(prcomp(t(log(cpm(ybothSpecies)))))
+pcaPlot=as.data.frame(pca$x)
+pcaPlot$evolution=bothSpeciesEvo
+pcaPlot$species=bothSpeciesSpe
+ve=pca$sdev^2/sum(pca$sdev^2)
+
+# Let's assume your data frame is named `df` and the grouping column is `group_col`
+# Also assuming that the PCA should be performed on columns `pca_cols`
+
+
+newC12 <- ggplot(pcaPlot, aes(x = PC1, y = PC2)) +
+  geom_point(aes(shape=evolution, colour = species),size = 4) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 3)[c(1,3)]) +
+  scale_shape_manual(
+    labels = c("Ancestor", "Evolved"), 
+    values = c(15,19)) +
+  xlab(paste0("PC1 (",round(ve[1]*100,2),"%)")) +
+  ylab(paste0("PC2 (",round(ve[2]*100,2),"%)")) +
+  theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15)) +
+  ggtitle("C")
+newC12
+
+newC34 <- ggplot(pcaPlot, aes(x = PC3, y = PC4)) +
+  geom_point(aes(shape=evolution, colour = species),size = 4) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 3)[c(1,3)]) +
+  scale_shape_manual(
+    labels = c("Ancestor", "Evolved"), 
+    values = c(15,19)) +
+  xlab(paste0("PC3 (",round(ve[3]*100,2),"%)")) +
+  ylab(paste0("PC4 (",round(ve[4]*100,2),"%)")) +
+  theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15)) +
+  ggtitle("C")
+newC34
+
+  
+```
+
+## Plot all PCAs
+
+```{r, echo=F, message=FALSE}
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/PCA/PCAmergedPlots.tiff", height = 20, width = 30, units = "cm", res =300)
+multiplot(A, B, C, D, cols = 2)
+dev.off() 
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/PCA/PCAmergedPlotsSpeciesJoint.tiff", height = 30, width = 15, units = "cm", res =300)
+multiplot(A, B, newC34, cols = 1)
+dev.off() 
+
+```
+
+## Plot all in the same PCA
+```{r}
+
+allcountUse <- cbind(florcount_use, raw_counts_use, simcounts_use, melcounts_use) #join all counttables, raw
+allDataEvo <- c(evoPop, evo, simevo, melevo) #vector of annotation
+allDataEvo <- ifelse(allDataEvo == "H", "hot", ifelse(allDataEvo == "B", "base", allDataEvo)) #create a evo annotation that is uniform
+allDataDiv <- c(rep("WithinPopulation", length(evoRep)), rep("BetweenPopulations", length(group)), rep("BetweenSpecies", length(c(simevo, melevo)))) #annotation on the divergence level info
+allDataSpe <- c(rep("Dsim", length(c(evoRep, group, simevo))), rep("Dmel", length(melevo))) #keep also info on the species
+allDataGroup <- paste(allDataDiv, allDataEvo, sep = "_") #a unique sample name
+
+yallData=DGEList(counts=allcountUse,group = allDataGroup) #make an DGEList edgeR object
+yallData=calcNormFactors(yallData) #calc normalization factors across the meta count tables
+
+pca=(prcomp(t(log(cpm(yallData))))) #then perform the PCA as the others, log transformed cpm values corrected for library size, and then t transform to make PCA
+pcaPlot=as.data.frame(pca$x) #extract scores
+pcaPlot$evolution=allDataEvo # Add group column to the PCA scores
+pcaPlot$divergence=allDataDiv
+pcaPlot$divergence=factor(pcaPlot$divergence, levels = c("WithinPopulation", "BetweenPopulations", "BetweenSpecies"))
+pcaPlot$evoDiv=paste(allDataDiv, allDataEvo, sep = "_")
+pcaPlot$species=allDataSpe
+ve=pca$sdev^2/sum(pca$sdev^2)
+
+paste0("PC2 (",round(ve[1]*100,2),"%)")
+
+SuppPlotForAllExp1 <- ggplot(pcaPlot, aes_string(x = pcaPlot$PC1, y = pcaPlot$PC2)) + #using aes_string as the aes get messed up when plotting the next plot
+  geom_point(aes(shape=evolution, colour = divergence),size = 4, stroke = 1.5) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", alpha = 0.4, n = 10)[c(1,4,9)]) +
+  scale_shape_manual(
+    labels = c("Ancestor", "Evolved"), 
+    values = c(0,16)) +
+  xlab(paste0("PC1 (",round(ve[1]*100,2),"%)")) +
+  ylab(paste0("PC2 (",round(ve[2]*100,2),"%)")) +
+  theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15))
+SuppPlotForAllExp1
+
+SuppPlotForAllExp2 <- ggplot(pcaPlot, aes_string(x = pcaPlot$PC1, y = pcaPlot$PC2)) + #using aes_string as the aes get messed up when plotting the next plot
+  geom_point(aes(shape=evolution, colour = species),size = 4, stroke = 1.5) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", alpha = 0.4, n = 10)[c(4,9)]) +
+  scale_shape_manual(
+    labels = c("Ancestor", "Evolved"), 
+    values = c(0,16)) +
+  xlab(paste0("PC1 (",round(ve[1]*100,2),"%)")) +
+  ylab(paste0("PC2 (",round(ve[2]*100,2),"%)")) +
+  theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15))
+SuppPlotForAllExp2
+
+
+SuppPlot <- ggarrange(SuppPlotForAllExp1,
+                    SuppPlotForAllExp2,
+                    labels = c("A","B"), 
+                    ncol = 1, nrow = 2,
+                    align = "hv",
+                    common.legend = F, legend = "right",
+                    font.label = list(size = 20, color = "black", face = "bold", family = NULL, position = "top"))
+
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/PCA/crazyMetaPCA12_AB.tiff", height = 20, width = 15, units = "cm", res =300)
+SuppPlot
+dev.off() 
+
+
+#now plot the first plot, with PC2 and PC3, PC1 seperates the two species mel and sim
+E <- ggplot(pcaPlot, aes_string(x = pcaPlot$PC2, y = pcaPlot$PC3)) + #using aes_string as the aes get messed up when plotting the next plot
+  geom_point(aes(shape=evolution, colour = divergence),size = 3, stroke = 1.5) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", alpha = 0.4, n = 10)[c(1,4,9)]) +
+  scale_shape_manual(
+    labels = c("Ancestor", "Evolved"), 
+    values = c(0,16)) +
+  xlab(paste0("PC2 (",round(ve[2]*100,2),"%)")) +
+  ylab(paste0("PC3 (",round(ve[3]*100,2),"%)")) +
+  theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15))
+E
+means <- aggregate(. ~ pcaPlot$evoDiv, data = pcaPlot[ ,1:84], mean) # Calculate the means for each group
+
+
+meanDifWithinPop <- with(means, c(PC2[6] - PC2[5], PC3[6] - PC3[5])) # Calculate the difference between group means for the arrow
+E <- E + geom_segment(                                               # Add arrows to the plot
+  data = means,
+  aes_string(x = means$PC2[5], y = means$PC3[5], xend = means$PC2[5] + meanDifWithinPop[1], yend = means$PC3[5] + meanDifWithinPop[2]),
+  arrow = arrow(type = "closed", length = unit(0.2, "inches")),
+  colour = hcl.colors(palette = "RdYlGn", n = 10)[1],
+  size = 3,
+  inherit.aes = FALSE
+)
+
+#repeat:
+meanDifBetweenPop <- with(means, c(PC2[2] - PC2[1], PC3[2] - PC3[1]))
+E <- E + geom_segment(
+  data = means,
+  aes_string(x = means$PC2[1], y = means$PC3[1], xend = means$PC2[1] + meanDifBetweenPop[1], yend = means$PC3[1] + meanDifBetweenPop[2]),
+  arrow = arrow(type = "closed", length = unit(0.2, "inches")),
+  colour = hcl.colors(palette = "RdYlGn", n = 10)[4],
+  size = 3,
+  inherit.aes = FALSE
+)
+
+meanDifBetweenSpec <- with(means, c(PC2[4] - PC2[3], PC3[4] - PC3[3]))
+E <- E + geom_segment(
+  data = means,
+  aes_string(x = means$PC2[3], y = means$PC3[3], xend = means$PC2[3] + meanDifBetweenSpec[1], yend = means$PC3[3] + meanDifBetweenSpec[2]),
+  arrow = arrow(type = "closed", length = unit(0.2, "inches")),
+  colour = hcl.colors(palette = "RdYlGn", n = 10)[9],
+  size = 3,
+  inherit.aes = FALSE
+)
+
+
+#make another with aces 3 and 4 as they describe similar pattern
+G <- ggplot(pcaPlot, aes_string(x = pcaPlot$PC3, y = pcaPlot$PC4)) +
+  geom_point(aes(shape=evolution, colour = divergence),size = 3, stroke = 1.5) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  #scale_color_manual(
+  #  values = viridis(n=4, alpha = 0.4)[1:3]) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", alpha = 0.4, n = 10)[c(1,4,9)]) +
+  scale_shape_manual(
+    labels = c("Ancestor", "Evolved"), 
+    values = c(0,16)) +
+  xlab(paste0("PC3 (",round(ve[3]*100,2),"%)")) +
+  ylab(paste0("PC4 (",round(ve[4]*100,2),"%)")) +
+  theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15))
+G
+
+meanDifWithinPop <- with(means, c(PC3[6] - PC3[5], PC4[6] - PC4[5]))
+G <- G + geom_segment(
+  data = means,
+  aes_string(x = means$PC3[5], y = means$PC4[5], xend = means$PC3[5] + meanDifWithinPop[1], yend = means$PC4[5] + meanDifWithinPop[2]),
+  arrow = arrow(type = "closed", length = unit(0.2, "inches")),
+  colour = hcl.colors(palette = "RdYlGn", n = 10)[1],
+  size = 3,
+  inherit.aes = FALSE
+)
+
+meanDifBetweenPop <- with(means, c(PC3[2] - PC3[1], PC4[2] - PC4[1]))
+G <- G + geom_segment(
+  data = means,
+  aes_string(x = means$PC3[1], y = means$PC4[1], xend = means$PC3[1] + meanDifBetweenPop[1], yend = means$PC4[1] + meanDifBetweenPop[2]),
+  arrow = arrow(type = "closed", length = unit(0.2, "inches")),
+  colour = hcl.colors(palette = "RdYlGn", n = 10)[4],
+  size = 3,
+  inherit.aes = FALSE
+)
+
+meanDifBetweenSpec <- with(means, c(PC3[4] - PC3[3], PC4[4] - PC4[3]))
+G <- G + geom_segment(
+  data = means,
+  aes_string(x = means$PC3[3], y = means$PC4[3], xend = means$PC3[3] + meanDifBetweenSpec[1], yend = means$PC4[3] + meanDifBetweenSpec[2]),
+  arrow = arrow(type = "closed", length = unit(0.2, "inches")),
+  colour = hcl.colors(palette = "RdYlGn", n = 10)[9],
+  size = 3,
+  inherit.aes = FALSE
+)
+
+print(E)
+print(G)
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/PCA/crazyMetaPCA23_allData.tiff", height = 15, width = 20, units = "cm", res =300)
+print(E)
+dev.off() 
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/PCA/crazyMetaPCA34_allData.tiff", height = 15, width = 20, units = "cm", res =300)
+print(G)
+dev.off() 
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/PCA/crazyMetaPCA23n34_allData.tiff", height = 15, width = 20, units = "cm", res =300)
+multiplot(E, G, cols = 2)
+dev.off() 
+
+
+EGplotall <- ggarrange(E,
+                    G,
+                    labels = c("A","B"), 
+                    ncol = 2, nrow = 1,
+                    align = "hv",
+                    common.legend = T, legend = "right",
+                    font.label = list(size = 20, color = "black", face = "bold", family = NULL, position = "top"))
+
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/PCA/crazyMetaPCA23n34_ggarrange.tiff", height = 15, width = 30, units = "cm", res =300)
+EGplotall
+dev.off() 
+
+
+```
+
+
+
+## Calculate the angle between the vectors from the means in the ancestor to evolved from the PC3 and PC4
+
+```{r}
+
+# Function to calculate the slope between two points
+calculate_slope <- function(x1, y1, x2, y2) {
+  slope <- (y2 - y1) / (x2 - x1)
+  return(slope)
+}
+
+# Function to calculate the angle between two slopes
+#calculate_angle <- function(m1, m2) {
+#  angle <- atan(abs(m2 - m1))
+#  return(angle)
+#}
+
+#alternative by chatgpt
+calculate_angle <- function(m1, m2) {
+  angle <- atan(abs((m2 - m1) / (1 + m1 * m2)))
+  return(angle)
+}
+
+# I want to extract the slope of the three "vectors" for each level for aces 3 and 4
+means
+
+
+## for aces 2 and 3
+# Example points
+x1 <- means[5,3] 
+y1 <- means[5,4] 
+x2 <- means[6,3] 
+y2 <- means[6,4] 
+
+# Calculate the slope between the points
+WPslope <- calculate_slope(x1, y1, x2, y2)
+
+# Example points
+x1 <- means[1,3]
+y1 <- means[1,4]
+x2 <- means[2,3]
+y2 <- means[2,4]
+
+# Calculate the slope between the points
+BPslope <- calculate_slope(x1, y1, x2, y2)
+
+# Example points
+x1 <- means[3,3]
+y1 <- means[3,4]
+x2 <- means[4,3]
+y2 <- means[4,4]
+
+# Calculate the slope between the points
+BSslope <- calculate_slope(x1, y1, x2, y2)
+
+
+# Calculate the angle between the slopes of WP - BP
+angle <- calculate_angle(WPslope, BPslope)
+# Convert the angle to degrees
+angle_degrees <- angle * (180 / pi)
+# Print the result
+cat("Angle between slopes WP - BP: ", angle_degrees, " degrees\n")
+
+# Calculate the angle between the slopes of WP - BS
+angle <- calculate_angle(WPslope, BSslope)
+# Convert the angle to degrees
+angle_degrees <- angle * (180 / pi)
+cat("Angle between slopes WP - BS: ", angle_degrees, " degrees\n")
+
+# Calculate the angle between the slopes of BP - BS
+angle <- calculate_angle(BPslope, BSslope)
+# Convert the angle to degrees
+angle_degrees <- angle * (180 / pi)
+cat("Angle between slopes BP - BS: ", angle_degrees, " degrees\n")
+
+
+
+
+
+
+### for axes 34
+# Example points
+x1 <- means[5,4] 
+y1 <- means[5,5] 
+x2 <- means[6,4] 
+y2 <- means[6,5] 
+
+# Calculate the slope between the points
+WPslope <- calculate_slope(x1, y1, x2, y2)
+
+# Example points
+x1 <- means[1,4]
+y1 <- means[1,5]
+x2 <- means[2,4]
+y2 <- means[2,5]
+
+# Calculate the slope between the points
+BPslope <- calculate_slope(x1, y1, x2, y2)
+
+# Example points
+x1 <- means[3,4]
+y1 <- means[3,5]
+x2 <- means[4,4]
+y2 <- means[4,5]
+
+# Calculate the slope between the points
+BSslope <- calculate_slope(x1, y1, x2, y2)
+
+
+# Function to calculate the angle between two slopes
+#calculate_angle <- function(m1, m2) {
+#  angle <- atan(abs(m2 - m1))
+#  return(angle)
+#}
+
+#alternative by chatgpt
+calculate_angle <- function(m1, m2) {
+  angle <- atan(abs((m2 - m1) / (1 + m1 * m2)))
+  return(angle)
+}
+
+# Calculate the angle between the slopes of WP - BP
+angle <- calculate_angle(WPslope, BPslope)
+# Convert the angle to degrees
+angle_degrees <- angle * (180 / pi)
+# Print the result
+cat("Angle between slopes WP - BP: ", angle_degrees, " degrees\n")
+
+# Calculate the angle between the slopes of WP - BS
+angle <- calculate_angle(WPslope, BSslope)
+# Convert the angle to degrees
+angle_degrees <- angle * (180 / pi)
+cat("Angle between slopes WP - BS: ", angle_degrees, " degrees\n")
+
+# Calculate the angle between the slopes of BP - BS
+angle <- calculate_angle(BPslope, BSslope)
+# Convert the angle to degrees
+angle_degrees <- angle * (180 / pi)
+cat("Angle between slopes BP - BS: ", angle_degrees, " degrees\n")
+
+
+```
+
+
+# Lineral modeling and DE analysis
+
+Comparison of the evolved to the ancestral group for each replicate/population/species 
+
+## Within a population
+```{r}
+floModelDesign=model.matrix(~0+evoRep)
+floDGE=estimateDisp(yFlor,design = floModelDesign,robust = T)
+floGLM=glmFit(floDGE,design = floModelDesign)
+flomy.contrasts=makeContrasts(evo_r1=evoRepH_r1-evoRepB_r0,
+                           evo_r2=evoRepH_r2-evoRepB_r0,
+                           evo_r3=evoRepH_r3-evoRepB_r0,
+                           evo_r4=evoRepH_r4-evoRepB_r0,
+                           evo_r5=evoRepH_r5-evoRepB_r0,
+                           evo_r6=evoRepH_r6-evoRepB_r0,
+                           evo_r7=evoRepH_r7-evoRepB_r0,
+                           evo_r8=evoRepH_r8-evoRepB_r0,
+                           evo_r9=evoRepH_r9-evoRepB_r0,
+                           evo_r10=evoRepH_r10-evoRepB_r0,
+                           levels=floModelDesign)
+
+floLRT_list=list()
+for (i in colnames(flomy.contrasts)){
+  floLRT_list[[i]]=glmLRT(floGLM,contrast = flomy.contrasts[,i])
+}
+
+flores_list=lapply(floLRT_list,function(x) x$table)
+flores_list=lapply(flores_list,function(x) {
+  x$padj=p.adjust(x$PValue,method = "BH")
+  x})
+
+for (i in names(flores_list)){
+  write.csv(flores_list[[i]],paste0("../output/WitinPop_DE_analysis/",i,".csv"),quote = F)
+}
+
+up_regulated_withinPop=sapply(flores_list[1:10],function(x) which(x$padj<0.05&x$logFC>0))
+dn_regulated_withinPop=sapply(flores_list[1:10],function(x) which(x$padj<0.05&x$logFC<0))
+
+
+```
+
+## Between populations
+```{r}
+ModelDesign=model.matrix(~0+group)
+DGE=estimateDisp(y,design = ModelDesign,robust = T)
+GLM=glmFit(DGE,design = ModelDesign)
+my.contrasts=makeContrasts(evo_Fl=groupH_Fl-groupB_Fl,
+                           evo_Pt=groupH_Pt-groupB_Pt,
+                           evo_SA=groupH_SA-groupB_SA,
+                           levels=ModelDesign)
+LRT_list=list()
+for (i in colnames(my.contrasts)){
+  LRT_list[[i]]=glmLRT(GLM,contrast = my.contrasts[,i])
+}
+
+res_list=lapply(LRT_list,function(x) x$table)
+res_list=lapply(res_list,function(x) {
+  x$padj=p.adjust(x$PValue,method = "BH")
+  x})
+
+for (i in names(res_list)){
+  write.csv(res_list[[i]],paste0("../output/BetweenPop_DE_analysis/",i,".csv"),quote = F)
+}
+
+up_regulated_betweenpop=sapply(res_list[1:3],function(x) which(x$padj<0.05&x$logFC>0))
+dn_regulated_betweenpop=sapply(res_list[1:3],function(x) which(x$padj<0.05&x$logFC<0))
+
+
+```
+
+## Between species
+
+### D. simulans  
+```{r}
+simModelDesign=model.matrix(~0+simevo) #is the intercept set to 0 in able to make constrast analysis possable? yes
+simDGE2=estimateDisp(simy2,design = simModelDesign,robust = T)
+simGLM=glmFit(simDGE2,design = simModelDesign)
+simmycontrast=makeContrasts("HB"=simevohot-simevobase, #don't quiet get the lab contrast, the average of the cold and hot compared to base, but could it be written as follows: Base-(Hot+Cold)/2?
+                            levels = simModelDesign)
+simLRT_res_HB=glmLRT(simGLM,contrast = simmycontrast[,"HB"])
+simres_table_HB=simLRT_res_HB$table
+simres_table_HB$padj=p.adjust(simres_table_HB$PValue,method = "BH")
+
+simHotUp <- row.names(simres_table_HB[simres_table_HB$padj<0.05 & simres_table_HB$logFC>0, ])
+simHotDown <- row.names(simres_table_HB[simres_table_HB$padj<0.05 & simres_table_HB$logFC<0, ])
+length(simHotDown)
+length(simHotUp)
+
+write.csv(simres_table_HB, "../output/BetweenSpec_DE_analysis/simres_table_HB.csv", quote = F)
+```
+### D. simulans  
+
+```{r}
+#melanogaster
+melModelDesign=model.matrix(~0+melevo)
+melDGE2=estimateDisp(mely2,design = melModelDesign,robust = T)
+melGLM=glmFit(melDGE2,design = melModelDesign)
+melmycontrast=makeContrasts("HB"=melevohot-melevobase,
+                            levels = melModelDesign)
+melLRT_res_HB=glmLRT(melGLM,contrast = melmycontrast[,"HB"])
+melres_table_HB=melLRT_res_HB$table
+melres_table_HB$padj=p.adjust(melres_table_HB$PValue,method = "BH")
+
+
+melHotUp <- row.names(melres_table_HB[melres_table_HB$padj<0.05 & melres_table_HB$logFC>0, ])
+melHotDown <- row.names(melres_table_HB[melres_table_HB$padj<0.05 & melres_table_HB$logF<0, ])
+length(melHotDown)
+length(melHotUp)
+
+write.csv(melres_table_HB, "../output/BetweenSpec_DE_analysis/melres_table_HB", quote = F)
+
+```
+
+
+# Estimates of parallelism on gene expression 
+
+## Correlation
+
+### Within population  
+
+```{r}
+#extracting the upper part of the correlation matrix
+
+logFC_matrix_withinpop=sapply(flores_list[1:10],function(x) x$logFC)
+logFC_cor_vector_withinpop <- cor(logFC_matrix_withinpop, method = "spearman")[lower.tri(cor(logFC_matrix_withinpop))]
+
+
+
+```
+
+
+### Between populations 
+
+```{r}
+logFC_matrix_betweenpop=sapply(res_list[1:3],function(x) x$logFC)
+logFC_cor_vector_betweenpop <- cor(logFC_matrix_betweenpop, method = "spearman")[lower.tri(cor(logFC_matrix_betweenpop))]
+
+
+```
+
+
+### Between species 
+
+```{r}
+logFC_cor_vector_betweenspecies <- cor(simres_table_HB[,]$logFC, melres_table_HB[,]$logFC, method = "spearman")
+
+```
+
+### The same population in different experiments, as a null/quality/expectation
+```{r}
+
+#Florida
+floflorcount_use <- florcount_use[,c(1:5,11:12,23,33:34)]
+flofloevoPop <- evoPop[c(1:5,11:12,23,33:34)]
+yFlorFlor=DGEList(counts=floflorcount_use,group = evoPop[c(1:5,11:12,23,33:34)])
+yFlorFlor=calcNormFactors(yFlorFlor)
+
+flofloModelDesign=model.matrix(~0+flofloevoPop)
+flofloDGE=estimateDisp(yFlorFlor,design = flofloModelDesign,robust = T)
+flofloGLM=glmFit(flofloDGE,design = flofloModelDesign)
+floflomy.contrasts=makeContrasts("HB"=flofloevoPopH-flofloevoPopB,
+                           levels=flofloModelDesign)
+
+flofloLRT_list=glmLRT(flofloGLM,contrast = floflomy.contrasts[,"HB"])
+flores_table=flofloLRT_list$table
+flores_table$padj=p.adjust(flores_table$PValue,method = "BH")
+
+table(row.names(flores_table) == row.names(res_list[[1]]))
+
+logFC_cor_vector_betweenFlorida <- cor.test(flores_table[,]$logFC, res_list$evo_Fl$logFC, method = "spearman")
+logFC_cor_vector_betweenFlorida
+
+#Portugal
+logFC_cor_vector_betweenPortugal <- cor.test(simres_table_HB[,]$logFC, res_list[[2]]$logFC, method = "spearman")
+logFC_cor_vector_betweenPortugal
+
+```
+
+### Technical variation within experiment
+
+
+```{r}
+
+#Sub replicates of Florida
+#first, contrast the 
+florcount_use <- read.csv("../data/IntersectedCountTables/InterIntraIntersect_monster_fullset_readcounts.csv",
+                          stringsAsFactors = F,row.names = 1)
+
+
+evoPop <- substr(colnames(florcount_use), 1,1)
+repPop <- as.numeric(substr(colnames(florcount_use), 7,8))
+repPop[repPop > 10] <- 0
+
+tecRepPop <- substr(colnames(florcount_use), 9,9)
+tecRepPop[tecRepPop == "b"] <- 1
+
+repPop <- as.factor(repPop)
+evoRepTec <- paste(evoPop, repPop, tecRepPop, sep = "_")
+data.frame(evoRepTec, colnames(florcount_use))
+
+tecyFlor=DGEList(counts=florcount_use,group = evoRepTec)
+tecyFlor=calcNormFactors(tecyFlor)
+
+
+tecfloModelDesign=model.matrix(~0+evoRepTec)
+tecfloDGE=estimateDisp(tecyFlor,design = tecfloModelDesign,robust = T)
+tecfloGLM=glmFit(tecfloDGE,design = tecfloModelDesign)
+tecflomy.contrasts=makeContrasts(
+  techevo_r1_1=evoRepTecH_1_1-evoRepTecB_0_1,
+  techevo_r1_2=evoRepTecH_1_2-evoRepTecB_0_1,
+  techevo_r1_3=evoRepTecH_1_3-evoRepTecB_0_1,
+
+  tecevo_r2_1=evoRepTecH_2_1-evoRepTecB_0_1,
+  tecevo_r2_2=evoRepTecH_2_2-evoRepTecB_0_1,
+  tecevo_r2_3=evoRepTecH_2_3-evoRepTecB_0_1,
+
+  tecevo_r3_1=evoRepTecH_3_1-evoRepTecB_0_1,
+  tecevo_r3_2=evoRepTecH_3_2-evoRepTecB_0_1,
+  tecevo_r3_3=evoRepTecH_3_3-evoRepTecB_0_1,
+  
+  tecevo_r4_1=evoRepTecH_4_1-evoRepTecB_0_1,
+  tecevo_r4_2=evoRepTecH_4_2-evoRepTecB_0_1,
+  tecevo_r4_3=evoRepTecH_4_3-evoRepTecB_0_1,
+  
+  tecevo_r5_1=evoRepTecH_5_1-evoRepTecB_0_1,
+  tecevo_r5_2=evoRepTecH_5_2-evoRepTecB_0_1,
+  tecevo_r5_3=evoRepTecH_5_3-evoRepTecB_0_1,
+  
+  tecevo_r6_1=evoRepTecH_6_1-evoRepTecB_0_1,
+  tecevo_r6_2=evoRepTecH_6_2-evoRepTecB_0_1,
+  tecevo_r6_3=evoRepTecH_6_3-evoRepTecB_0_1,
+
+  tecevo_r7_1=evoRepTecH_7_1-evoRepTecB_0_1,
+  tecevo_r7_2=evoRepTecH_6_2-evoRepTecB_0_1,
+  tecevo_r7_3=evoRepTecH_6_3-evoRepTecB_0_1,
+
+  tecevo_r8_1=evoRepTecH_8_1-evoRepTecB_0_1,
+  tecevo_r8_2=evoRepTecH_8_2-evoRepTecB_0_1,
+  tecevo_r8_3=evoRepTecH_8_3-evoRepTecB_0_1,
+  
+  tecevo_r9_1=evoRepTecH_9_1-evoRepTecB_0_1,
+  tecevo_r9_2=evoRepTecH_9_2-evoRepTecB_0_1,
+  tecevo_r9_3=evoRepTecH_9_3-evoRepTecB_0_1,
+  
+  tecevo_r10_1=evoRepTecH_10_1-evoRepTecB_0_1,
+  tecevo_r10_2=evoRepTecH_10_2-evoRepTecB_0_1,
+  tecevo_r10_3=evoRepTecH_10_3-evoRepTecB_0_1,
+
+  levels=tecfloModelDesign)
+
+tecfloLRT_list=list()
+for (i in colnames(tecflomy.contrasts)){
+  tecfloLRT_list[[i]]=glmLRT(tecfloGLM,contrast = tecflomy.contrasts[,i])
+}
+
+tecflores_list=lapply(tecfloLRT_list,function(x) x$table)
+tecflores_list=lapply(tecflores_list,function(x) {
+  x$padj=p.adjust(x$PValue,method = "BH")
+  x})
+
+logFC_matrix_techreps=sapply(tecflores_list[1:30],function(x) x$logFC)
+head(logFC_matrix_techreps)
+
+
+logFC_cor_vector_techreps <- c()
+i=1
+while(i < 30) {
+  logFC_cor_vector_techreps <- c(logFC_cor_vector_techreps, cor(logFC_matrix_techreps[,i], logFC_matrix_techreps[,i+1], method = "spearman"))
+  logFC_cor_vector_techreps <- c(logFC_cor_vector_techreps, cor(logFC_matrix_techreps[,i], logFC_matrix_techreps[,i+2], method = "spearman"))
+  logFC_cor_vector_techreps <- c(logFC_cor_vector_techreps, cor(logFC_matrix_techreps[,i+1], logFC_matrix_techreps[,i+2], method = "spearman"))
+
+  i = i+3
+
+}
+logFC_cor_vector_techreps
+
+#between evoreps using only 1 sub-replicate
+
+tecfloModelDesign=model.matrix(~0+evoRepTec)
+tecfloDGE=estimateDisp(tecyFlor,design = tecfloModelDesign,robust = T)
+tecfloGLM=glmFit(tecfloDGE,design = tecfloModelDesign)
+tecflomy.contrasts=makeContrasts(
+  techevo_r1_1=evoRepTecH_1_1-evoRepTecB_0_1,
+
+  tecevo_r2_1=evoRepTecH_2_1-evoRepTecB_0_1,
+
+  tecevo_r3_1=evoRepTecH_3_1-evoRepTecB_0_1,
+  
+  tecevo_r4_1=evoRepTecH_4_1-evoRepTecB_0_1,
+  
+  tecevo_r5_1=evoRepTecH_5_1-evoRepTecB_0_1,
+  
+  tecevo_r6_1=evoRepTecH_6_1-evoRepTecB_0_1,
+  
+  tecevo_r7_1=evoRepTecH_7_1-evoRepTecB_0_1,
+
+  tecevo_r8_1=evoRepTecH_8_1-evoRepTecB_0_1,
+  
+  tecevo_r9_1=evoRepTecH_9_1-evoRepTecB_0_1,
+  
+  tecevo_r10_1=evoRepTecH_10_1-evoRepTecB_0_1,
+
+  levels=tecfloModelDesign)
+
+tecfloLRT_list=list()
+for (i in colnames(tecflomy.contrasts)){
+  tecfloLRT_list[[i]]=glmLRT(tecfloGLM,contrast = tecflomy.contrasts[,i])
+}
+
+tecflores_list=lapply(tecfloLRT_list,function(x) x$table)
+tecflores_list=lapply(tecflores_list,function(x) {
+  x$padj=p.adjust(x$PValue,method = "BH")
+  x})
+
+
+
+logFC_matrix_techreps=sapply(tecflores_list[1:10],function(x) x$logFC)
+logFC_matrix_techreps
+logFC_cor_vector_evousingonlyonetecrep <- cor(logFC_matrix_techreps, method = "spearman")[lower.tri(cor(logFC_matrix_techreps))]
+
+
+
+
+ggplot(data=data.frame(
+  Rho = c(logFC_cor_vector_evousingonlyonetecrep, logFC_cor_vector_techreps), 
+  Comparison = c(rep("BetweenEvo", length(logFC_cor_vector_evousingonlyonetecrep)), rep("BetweenTech", length(logFC_cor_vector_techreps)))), aes(x = Comparison, y = Rho)) +
+  geom_boxplot()
+wilcox.test(x = logFC_cor_vector_evousingonlyonetecrep, y = logFC_cor_vector_techreps)
+
+
+# how much fold does the correlation decrease from evorep to tecrep?
+
+mean(logFC_cor_vector_techreps)/mean(logFC_cor_vector_evousingonlyonetecrep) #1.4
+0.99/mean(logFC_cor_vector_evousingonlyonetecrep) #max increase 2.5
+
+
+
+####sanity check, does the variance truly decrease from evo to tecrep?
+
+
+library(Biobase)
+library(ExpressionNormalizationWorkflow)
+
+
+pca=prcomp(t(log(cpm(yFlor)))) # This is without scaling
+pca=prcomp(t(log(cpm(yFlor))), center = T, scale. = T) # This is with scaling, and also now genes are shifted to be zero centered by passing center = T, this is optional though
+
+ve=round(pca$sdev^2/sum(pca$sdev^2),4)
+mycol_pca=c()
+
+
+evoPop <- substr(colnames(florcount_use), 1,1)
+repPop <- as.numeric(substr(colnames(florcount_use), 7,8))
+repPop[repPop > 10] <- 0
+
+tecRepPop <- substr(colnames(florcount_use), 9,9)
+tecRepPop[tecRepPop == "b"] <- 1
+
+repPop <- as.factor(repPop)
+evoRepTec <- paste(evoPop, repPop, tecRepPop, sep = "_")
+data.frame(evoRepTec, colnames(florcount_use))
+
+tecyFlor=DGEList(counts=florcount_use,group = evoRepTec)
+tecyFlor=calcNormFactors(tecyFlor)
+
+meta.table=data.frame(evo=evoPop,evoRep=repPop, evoRepTec = evoRepTec, row.names = colnames(yFlor))
+annot=data.frame(labelDescription=c("Factor levels","Factor levels","Factor levels"))
+annot_factors=AnnotatedDataFrame(meta.table,annot)
+expr.set=ExpressionSet(log(cpm(yFlor)),annot_factors)
+pvca_res=pvcAnaly(expr.set, 0.01,c("evo","evoRep","evoRepTec"))
+
+
+
+
+
+
+```
+
+### Statistical testing
+
+#### Prepare the data
+
+```{r}
+correlationData <- data.frame(
+  SpearmanRho = c(
+  logFC_cor_vector_withinpop, 
+  logFC_cor_vector_betweenpop,
+  logFC_cor_vector_betweenspecies),
+  DivergenceLevel = c(
+    rep("WithinPopulation", length(logFC_cor_vector_withinpop)),
+    rep("BetweenPopulation", length(logFC_cor_vector_betweenpop)),
+    rep("BetweenSpecies", length(logFC_cor_vector_betweenspecies)))
+)
+
+
+correlationData$DivergenceLevel <- factor(correlationData$DivergenceLevel, levels = c("WithinPopulation", "BetweenPopulation", "BetweenSpecies"))
+```
+
+#### Wilcox test
+
+```{r}
+pvalGeneCorr <- c(0,0,0)
+#pvalGene[1] <- wilcox.test(
+#  y = subset(JIDataDirIncluded, DivergenceLevel == "WithinPopulation")$JI, 
+#  x = subset(JIDataDirIncluded, DivergenceLevel == "BetweenPopulation")$JI, 
+#  alternative = "less")$p.value
+pvalGeneCorr[1] <- wilcox.test(
+  x = subset(correlationData, DivergenceLevel == "WithinPopulation")$SpearmanRho, 
+  mu = mean(subset(correlationData, DivergenceLevel == "BetweenPopulation")$SpearmanRho), 
+  alternative = "greater")$p.value
+pvalGeneCorr[2] <- wilcox.test(
+  x = subset(correlationData, DivergenceLevel == "BetweenPopulation")$SpearmanRho, 
+  mu = subset(correlationData, DivergenceLevel == "BetweenSpecies")$SpearmanRho, 
+  alternative = "greater")$p.value
+pvalGeneCorr[3] <- wilcox.test(
+  x = subset(correlationData, DivergenceLevel == "WithinPopulation")$SpearmanRho, 
+  mu = subset(correlationData, DivergenceLevel == "BetweenSpecies")$SpearmanRho, 
+  alternative = "greater")$p.value
+
+pvalGeneCorr <- p.adjust(pvalGeneCorr, "bonferroni") #multiple testing correction 
+names(pvalGeneCorr) <-  c("WP_BP_gene", "BP_BS_gene", "WP_BS_gene")
+pvalGeneCorr
+```
+
+#### Permuting
+
+```{r}
+#Sample all possible combination of 3 replicates from the 10 replicates of the Florida populations and make a pairwise comparison
+ind=combinations(10,3,set=TRUE, repeats.allowed=FALSE)
+permut_logFC_cor <- c() #collect all the data
+for(i in 1:nrow(ind)){
+  permut_withinpop <- sapply(flores_list[ind[i,]],function(x) x$logFC) #extract the logFC
+  logFC_permut_withinpop <- cor(permut_withinpop, method = "spearman")[lower.tri(cor(permut_withinpop))] #perform the cor test
+  permut_logFC_cor <- c(permut_logFC_cor, mean(logFC_permut_withinpop)) #collect the data
+}
+length(permut_logFC_cor)
+
+#how often are the permutationed mean values higher than the mean of between population and species
+table(permut_logFC_cor < mean(logFC_cor_vector_betweenpop)) 
+sum((permut_logFC_cor < mean(logFC_cor_vector_betweenpop)))/length(permut_logFC_cor)
+
+table(permut_logFC_cor < mean(logFC_cor_vector_betweenspecies))
+sum((permut_logFC_cor < logFC_cor_vector_betweenspecies))/length(permut_logFC_cor)
+
+
+#Visualisation 
+permut_logFC_cor <- as.data.frame(permut_logFC_cor)
+permutRhoFC <- ggplot(data = permut_logFC_cor, aes(x = permut_logFC_cor)) +
+  #geom_density(bins = 100, fill = viridis(n=4, alpha = 0.5)[1], color = viridis(n=4)[1]) +
+  geom_histogram(binwidth = 0.01, fill = hcl.colors(palette = "RdYlGn", alpha = 0.5, n = 10)[1], color = hcl.colors(palette = "RdYlGn", alpha = 0.5, n = 10)[1]) +
+  geom_vline(xintercept = logFC_cor_vector_betweenspecies, color = hcl.colors(palette = "RdYlGn", n = 10)[9], linetype= "dashed", size = 2) + 
+  geom_vline(xintercept = mean(logFC_cor_vector_betweenpop), color = hcl.colors(palette = "RdYlGn", n = 10)[4], linetype= "dashed", size = 2) +
+  geom_vline(xintercept = mean(permut_logFC_cor$permut_logFC_cor), color = hcl.colors(palette = "RdYlGn", n = 10)[1], linetype= "dashed", size = 2) +
+  theme_minimal() +
+  ylab("Count") +
+  xlab("Spearman's rho")
+permutRhoFC
+
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/ParallelEstimatesAcrossDivergance/permutCOR.tiff", height = 15, width = 15, units = "cm", res =300)
+permutRhoFC
+dev.off()
+
+```
+
+### Plot
+
+Now lets try to plot this
+```{r}
+
+
+COR <- ggplot(correlationData, aes(x =, DivergenceLevel, y = SpearmanRho, color = DivergenceLevel, fill = DivergenceLevel)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.2) +
+  theme_minimal() +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 10)[c(1,4,9)]) +
+  scale_fill_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 10, alpha = 0.4)[c(1,4,9)]) +
+  theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15),
+        legend.position = "none") +
+  scale_x_discrete(labels=c('Within Population', 'Between Populations', 'Between Species')) +
+  geom_signif(comparisons = list(
+    c("WithinPopulation", "BetweenPopulation")),
+    annotations = format(pvalGeneCorr[1], scientific = T, digits = 2),  color = "black", y_position = 0.8, textsize=4) +
+  geom_signif(comparisons = list(
+    c("BetweenPopulation", "BetweenSpecies")),
+    annotations = format(pvalGeneCorr[2], scientific = T, digits = 2),  color = "black", y_position = 0.4, textsize=4) +
+  geom_signif(comparisons = list(
+    c("BetweenSpecies","WithinPopulation")),
+    annotations = format(pvalGeneCorr[3], scientific = T, digits = 2),  color = "black", y_position = 0.85, textsize=4) +
+  xlab("\n Divergence level") +
+  ylab("Spearman's rho")
+
+
+COR
+
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/ParallelEstimatesAcrossDivergance/CORlogFC.tiff", height = 15, width = 15, units = "cm", res =300)
+COR
+dev.off() 
+
+```
+
+## Fisher's exact test
+
+### Within population
+
+```{r}
+DE_number_withinpop=sapply(flores_list[1:10],function(x) which(x$padj<0.05))
+
+forTable=combinations(10,2, v = colnames(outer(X=DE_number_withinpop,Y=DE_number_withinpop,Vectorize(test_f_odds))), set=TRUE, repeats.allowed=FALSE)
+
+odds_Intra_withinPop=outer(X=DE_number_withinpop,Y=DE_number_withinpop,Vectorize(test_f_odds))[lower.tri(matrix(nrow = 10, ncol = 10))]
+p_Intra_withinPop=outer(X=DE_number_withinpop,Y=DE_number_withinpop,Vectorize(test_f_p))[lower.tri(matrix(nrow = 10, ncol = 10))]
+
+```
+
+### Between populations
+
+```{r}
+DE_number_betweenpop=sapply(res_list[1:3],function(x) which(x$padj<0.05))
+
+odds_Inter_betweenpop=outer(X=DE_number_betweenpop,Y=DE_number_betweenpop,Vectorize(test_f_odds))[lower.tri(matrix(nrow = 3, ncol = 3))]
+p_Inter_betweenpop=outer(X=DE_number_betweenpop,Y=DE_number_betweenpop,Vectorize(test_f_p))[lower.tri(matrix(nrow = 3, ncol = 3))]
+
+```
+
+### Between species
+```{r}
+simSignificant <- which(simres_table_HB$padj<0.05)
+
+melSignificant <- which(melres_table_HB$padj<0.05)
+
+odds_Inter_betweenspecies=test_f_odds(simSignificant, melSignificant)
+p_Inter_betweenspecies=test_f_p(simSignificant, melSignificant) #no direction
+
+
+```
+
+### Result table
+```{r}
+
+FETDataDirIncluded <- data.frame(
+  DivergenceLevel = c(
+    rep("WithinPopulation", length(odds_Intra_withinPop)),
+    rep("BetweenPopulation", length(odds_Inter_betweenpop)),
+    rep("BetweenSpecies", length(odds_Inter_betweenspecies))),
+  OR = c(
+    odds_Intra_withinPop,
+    odds_Inter_betweenpop,
+    odds_Inter_betweenspecies),
+  pval = c(
+    p_Intra_withinPop,
+    p_Inter_betweenpop,
+    p_Inter_betweenspecies))
+
+FETDataDirIncluded$padj <- p.adjust(FETDataDirIncluded$pval, method = "BH")
+FETDataDirIncluded$OR <- round(FETDataDirIncluded$OR, 2)
+FETDataDirIncluded$pval <- format(FETDataDirIncluded$pval, scientific = TRUE, digits = 3)
+FETDataDirIncluded$padj <- format(FETDataDirIncluded$padj, scientific = TRUE, digits = 3)
+FETDataDirIncluded
+
+#write the table
+write.csv(x = FETDataDirIncluded, "../output/FishersTest/SuppTable.csv", quote = F, row.names = F, )
+
+
+```
+
+
+## Jaccard Index
+
+### Within population
+```{r}
+ind=combinations(10,2,set=TRUE, repeats.allowed=FALSE)
+
+#no direction
+ja_ge_withinpop=c()
+nrofoverlappinggenes_withinpop = c()
+for (j in 1:45) {
+  inte=length(intersect(unlist(DE_number_withinpop[ind[j,1]]),unlist(DE_number_withinpop[ind[j,2]])))
+  nrofoverlappinggenes_withinpop = c(nrofoverlappinggenes_withinpop, inte)
+  uni=length(union(unlist(DE_number_withinpop[ind[j,1]]),unlist(DE_number_withinpop[ind[j,2]])))
+  ja_ge_withinpop[j]=inte/uni
+}
+
+min(nrofoverlappinggenes_withinpop)
+max(nrofoverlappinggenes_withinpop)
+
+round(min(ja_ge_withinpop), digits = 2)
+round(max(ja_ge_withinpop), digits = 2)
+round(mean(ja_ge_withinpop), digits = 2)
+
+
+```
+
+### Between populations
+```{r}
+ind=combinations(3,2,set=TRUE, repeats.allowed=FALSE)
+
+#no direction
+ja_ge_betweenpop=c()
+nrofoverlappinggenes_betweenpop = c()
+for (j in 1:3) {
+  inte=length(intersect(unlist(DE_number_betweenpop[ind[j,1]]),unlist(DE_number_betweenpop[ind[j,2]])))
+  nrofoverlappinggenes_betweenpop = c(nrofoverlappinggenes_betweenpop, inte)
+  uni=length(union(unlist(DE_number_betweenpop[ind[j,1]]),unlist(DE_number_betweenpop[ind[j,2]])))
+  ja_ge_betweenpop[j]=inte/uni
+}
+
+nrofoverlappinggenes_betweenpop
+mean(nrofoverlappinggenes_betweenpop)
+
+round(min(ja_ge_betweenpop), digits = 2)
+round(max(ja_ge_betweenpop), digits = 2)
+round(mean(ja_ge_betweenpop), digits = 2)
+
+
+```
+
+### Between species
+```{r}
+
+#no direction 
+AnB <- length(intersect(simSignificant, melSignificant)) 
+AuB <- length(union(simSignificant,melSignificant))
+ja_ge_betweenspecies <- AnB/AuB
+ja_ge_betweenspecies
+round(ja_ge_betweenspecies, digits = 2)
+length(intersect(simSignificant,melSignificant))
+
+
+```
+
+### Statistical testing
+
+#### Prepare the data frame
+```{r}
+#direction included in one factor
+JIData <- data.frame(
+  JIDir = c(
+  ja_ge_withinpop,
+  ja_ge_betweenpop,
+  ja_ge_betweenspecies),
+  JI = c(
+  ja_ge_withinpop,
+  ja_ge_betweenpop,
+  ja_ge_betweenspecies),
+  DivergenceLevel = c(
+    rep("WithinPopulation", length(ja_ge_withinpop)),
+    rep("BetweenPopulation", length(ja_ge_betweenpop)),
+    rep("BetweenSpecies", length(ja_ge_betweenspecies)))
+)
+JIData$DivergenceLevel <- factor(JIData$DivergenceLevel, levels = c("WithinPopulation", "BetweenPopulation", "BetweenSpecies"))
+head(JIData)
+```
+
+#### Wilcox test
+```{r}
+pvalGene <- c(0,0,0)
+#pvalGene[1] <- wilcox.test(
+#  y = subset(JIData, DivergenceLevel == "WithinPopulation")$JI, 
+#  x = subset(JIData, DivergenceLevel == "BetweenPopulation")$JI, 
+#  alternative = "less")$p.value
+pvalGene[1] <- wilcox.test(
+  x = subset(JIData, DivergenceLevel == "WithinPopulation")$JI, 
+  mu = mean(subset(JIData, DivergenceLevel == "BetweenPopulation")$JI), 
+  alternative = "greater")$p.value
+pvalGene[2] <- wilcox.test(
+  x = subset(JIData, DivergenceLevel == "BetweenPopulation")$JI, 
+  mu = subset(JIData, DivergenceLevel == "BetweenSpecies")$JI, 
+  alternative = "greater")$p.value
+pvalGene[3] <- wilcox.test(
+  x = subset(JIData, DivergenceLevel == "WithinPopulation")$JI, 
+  mu = subset(JIData, DivergenceLevel == "BetweenSpecies")$JI, 
+  alternative = "greater")$p.value
+
+pvalGene <- p.adjust(pvalGene, "bonferroni") #multiple testing correction 
+names(pvalGene) <-  c("WP_BP_gene", "BP_BS_gene", "WP_BS_gene")
+pvalGene
+
+```
+
+#### Permutation 
+
+```{r}
+    
+permutationed_jamean_ge_withinpop <- c()
+ind=combinations(10,3,set=TRUE, repeats.allowed=FALSE)
+for(i in 1:nrow(ind)){
+  temp_DE_number_withinpop <- DE_number_withinpop[ind[i,]]
+  indin=combinations(3,2,set=TRUE, repeats.allowed=FALSE)
+  temp_ja <- c()
+  for (j in 1:3) {
+    inte=length(intersect(unlist(temp_DE_number_withinpop[indin[j,1]]),unlist(temp_DE_number_withinpop[indin[j,2]])))
+    uni=length(union(unlist(temp_DE_number_withinpop[indin[j,1]]),unlist(temp_DE_number_withinpop[indin[j,2]])))
+    temp_ja[j]=inte/uni
+  }
+  permutationed_jamean_ge_withinpop <- c(permutationed_jamean_ge_withinpop, mean(temp_ja))
+
+}
+length(permutationed_jamean_ge_withinpop)
+min(permutationed_jamean_ge_withinpop)
+
+
+#how often are the permutationed mean values higher than the mean of between population and species
+table(permutationed_jamean_ge_withinpop < mean(ja_ge_betweenpop)) 
+sum((permutationed_jamean_ge_withinpop < mean(ja_ge_betweenpop)))/length(permutationed_jamean_ge_withinpop)
+
+table(permutationed_jamean_ge_withinpop < mean(ja_ge_betweenspecies))
+sum((permutationed_jamean_ge_withinpop < mean(ja_ge_betweenspecies)))/length(permutationed_jamean_ge_withinpop)
+
+    
+#Visualisation 
+permutationed_jamean_ge_withinpop <- as.data.frame(permutationed_jamean_ge_withinpop)
+permutJIGene <- ggplot(data = permutationed_jamean_ge_withinpop, aes(x = permutationed_jamean_ge_withinpop)) +
+  #geom_density(bins = 100, fill = viridis(n=4, alpha = 0.5)[1], color = viridis(n=4)[1]) +
+  geom_histogram(binwidth = 0.01, fill = hcl.colors(palette = "RdYlGn", alpha = 0.5, n = 10)[1], color = hcl.colors(palette = "RdYlGn", alpha = 0.5, n = 10)[1]) +
+  geom_vline(xintercept = mean(ja_ge_betweenspecies), color = hcl.colors(palette = "RdYlGn", n = 10)[9], linetype= "dashed", size = 2) + 
+  geom_vline(xintercept = mean(ja_ge_betweenpop), color = hcl.colors(palette = "RdYlGn", n = 10)[4], linetype= "dashed", size = 2) +
+  geom_vline(xintercept = mean(permutationed_jamean_ge_withinpop$permutationed_jamean_ge_withinpop), color = hcl.colors(palette = "RdYlGn", n = 10)[1], linetype= "dashed", size = 2) +
+  theme_minimal() +
+  ylab("Count") +
+  xlab("Jaccard index")
+permutJIGene
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/ParallelEstimatesAcrossDivergance/permutJIGene.tiff", height = 15, width = 15, units = "cm", res =300)
+permutJIGene
+dev.off()
+
+```
+### Plot
+
+```{r}
+
+
+JI <-ggplot(JIData, aes(x =, DivergenceLevel, y = JI, color = DivergenceLevel, fill = DivergenceLevel)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.2, size = 2) +
+  theme_minimal() +
+  scale_fill_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 10, alpha = 0.4)[c(1,4,9)]) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 10)[c(1,4,9)]) +
+  scale_shape_manual(
+    values = c(1,16)) +
+  theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15),
+        legend.position = "none") +
+  scale_x_discrete(labels=c('Within Population', 'Between Population', 'Between Species')) +
+  geom_signif(comparisons = list(
+    c("WithinPopulation", "BetweenPopulation")),
+    annotations = format(pvalGene[1], scientific = T, digits = 2),  color = "black", y_position = 0.55, textsize=4) +
+  geom_signif(comparisons = list(
+    c("BetweenPopulation", "BetweenSpecies")),
+    annotations = format(pvalGene[2], scientific = T, digits = 2),  color = "black", y_position = 0.35, textsize=4) +
+  geom_signif(comparisons = list(
+    c("BetweenSpecies","WithinPopulation")),
+    annotations = format(pvalGene[3], scientific = T, digits = 2),  color = "black", y_position = 0.5, textsize=4) +
+xlab("")
+JI
+
+
+```
+
+Save plot
+```{r, echo=F}
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/ParallelEstimatesAcrossDivergance/JI.tiff", height = 18, width = 18, units = "cm", res =500)
+JI
+dev.off() 
+```
+
+
+# Gene ontology analysis
+
+## Within a population
+
+```{r,  message=F}
+GO_res_table_withinpop=vector(mode='list', length=10)
+looping <- names(flores_list)
+for(i in 1:length(looping)) {
+  tmp=factor(as.integer(flores_list[[i]]$padj<0.05))
+  print(i)
+  names(tmp)=rownames(yFlor) 
+  tgd=new( "topGOdata", ontology="BP", allGenes = tmp, nodeSize=5,annot=annFUN.org, mapping="org.Dm.eg.db", ID = "ensembl" )
+  resTopGO.classic=runTest(tgd, algorithm = "classic", statistic = "Fisher" )
+  resTopGO.weight01=runTest(tgd, algorithm = "weight01", statistic = "Fisher" )
+  tmp_res=GenTable(
+    tgd,Fisher.classic = resTopGO.classic,
+    Fisher.weight01=resTopGO.weight01,
+    orderBy = "Fisher.weight01",
+    topNodes=length(resTopGO.classic@score),
+    numChar=100)
+  tmp_res <- tmp_res[order(tmp_res$GO.ID), ]
+  GO_res_table_withinpop[[i]]=tmp_res
+}
+names(GO_res_table_withinpop) <- looping
+
+
+GO_res_table_withinpop=lapply(GO_res_table_withinpop,function(x){
+  x$Fisher.weight01[x$Fisher.weight01=="< 1e-30"]=1e-30
+  return(x)
+} )
+
+GO_res_table_withinpop=lapply(GO_res_table_withinpop,function(x){
+  x$Fisher.weight01=as.numeric(x$Fisher.weight01)
+  return(x)
+} )
+
+GO_res_table_withinpop=lapply(GO_res_table_withinpop,function(x){
+  x$Fisher.classic.padj=p.adjust(as.numeric(x$Fisher.classic),"BH")
+  return(x)
+} )
+
+GOSig_withinpop=sapply(GO_res_table_withinpop[1:10],function(x) which(x$Fisher.weight01<0.05))
+
+max(lengths(GOSig_withinpop))
+min(lengths(GOSig_withinpop))
+
+
+for (i in 1:length(GO_res_table_withinpop)){
+  write.table(GO_res_table_withinpop[[i]][order(GO_res_table_withinpop[[i]]$`Rank in Fisher.weight01`),],
+              file = paste0("../output/WitinPop_DE_analysis/GO_enrichment/",names(GO_res_table_withinpop)[i],".txt"),
+              quote = F,row.names = F,sep="\t")  
+}
+
+
+```
+
+## Between population
+```{r, message=F, echo=TRUE}
+
+GO_res_table_betweenpop=vector(mode='list', length=3)
+looping <- names(res_list)
+for(i in 1:length(looping)) {
+  tmp=factor(as.integer(res_list[[i]]$padj<0.05))
+  print(i)
+  names(tmp)=rownames(y) 
+  tgd=new( "topGOdata", ontology="BP", allGenes = tmp, nodeSize=5,annot=annFUN.org, mapping="org.Dm.eg.db", ID = "ensembl" )
+  resTopGO.classic=runTest(tgd, algorithm = "classic", statistic = "Fisher" )
+  resTopGO.weight01=runTest(tgd, algorithm = "weight01", statistic = "Fisher" )
+  tmp_res=GenTable(
+    tgd,Fisher.classic = resTopGO.classic,
+    Fisher.weight01=resTopGO.weight01,
+    orderBy = "Fisher.weight01",
+    topNodes=length(resTopGO.classic@score),
+    numChar=100)
+  tmp_res <- tmp_res[order(tmp_res$GO.ID), ]
+  GO_res_table_betweenpop[[i]]=tmp_res
+  
+}
+names(GO_res_table_betweenpop) <- looping
+
+
+GO_res_table_betweenpop=lapply(GO_res_table_betweenpop,function(x){
+  x$Fisher.weight01[x$Fisher.weight01=="< 1e-30"]=1e-30
+  return(x)
+} )
+
+GO_res_table_betweenpop=lapply(GO_res_table_betweenpop,function(x){
+  x$Fisher.weight01=as.numeric(x$Fisher.weight01)
+  return(x)
+} )
+
+GO_res_table_betweenpop=lapply(GO_res_table_betweenpop,function(x){
+  x$Fisher.classic.padj=p.adjust(as.numeric(x$Fisher.classic),"BH")
+  return(x)
+} )
+
+GOSig_betweenpop=sapply(GO_res_table_betweenpop[1:3],function(x) which(x$Fisher.weight01<0.05))
+
+GO_res_table_betweenpop$evo_SA[GO_res_table_betweenpop$evo_SA$Fisher.weight01<0.05,c(1,2,8)]
+
+for (i in 1:length(GO_res_table_betweenpop)){
+  write.table(GO_res_table_betweenpop[[i]][order(GO_res_table_betweenpop[[i]]$`Rank in Fisher.weight01`),],
+              file = paste0("../output/BetweenPop_DE_analysis/GO_enrichment/",names(GO_res_table_betweenpop)[i],".txt"),
+              quote = F,row.names = F,sep="\t")  
+}
+
+
+```
+
+## Between species
+
+```{r, message=F}
+GO_res_table_betweenspecies=vector(mode='list', length=2)
+
+#sim
+tmp=factor(as.integer(simres_table_HB$padj<0.05))
+names(tmp)=rownames(simy2)
+tgd=new( "topGOdata", ontology="BP", allGenes = tmp, nodeSize=5,annot=annFUN.org, mapping="org.Dm.eg.db", ID = "ensembl" )
+resTopGO.classic=runTest(tgd, algorithm = "classic", statistic = "Fisher" )
+resTopGO.weight01=runTest(tgd, algorithm = "weight01", statistic = "Fisher" )
+tmp_res=GenTable(tgd,
+                 Fisher.classic = resTopGO.classic,
+                 Fisher.weight01=resTopGO.weight01,
+                 topNodes=length(resTopGO.classic@score),
+                 numChar=100)
+tmp_res <- tmp_res[order(tmp_res$GO.ID), ]
+GO_res_table_betweenspecies[[1]]=tmp_res
+
+#mel
+tmp=factor(as.integer(melres_table_HB$padj<0.1))
+names(tmp)=rownames(mely2)
+tgd=new( "topGOdata", ontology="BP", allGenes = tmp, nodeSize=5,annot=annFUN.org, mapping="org.Dm.eg.db", ID = "ensembl" )
+resTopGO.classic=runTest(tgd, algorithm = "classic", statistic = "Fisher" )
+resTopGO.weight01=runTest(tgd, algorithm = "weight01", statistic = "Fisher" )
+tmp_res=GenTable(tgd,
+                 Fisher.classic = resTopGO.classic,
+                 Fisher.weight01=resTopGO.weight01,
+                 topNodes=length(resTopGO.classic@score),
+                 numChar=100)
+tmp_res <- tmp_res[order(tmp_res$GO.ID), ]
+GO_res_table_betweenspecies[[2]]=tmp_res
+
+names(GO_res_table_betweenspecies) <- c("sim", "mel")
+table(GO_res_table_betweenspecies[[2]]$GO.ID == GO_res_table_betweenspecies[[1]]$GO.ID)
+
+GO_res_table_betweenspecies=lapply(GO_res_table_betweenspecies,function(x){
+  x$Fisher.weight01[x$Fisher.weight01=="< 1e-30"]=1e-30
+  return(x)
+} )
+
+GO_res_table_betweenspecies=lapply(GO_res_table_betweenspecies,function(x){
+  x$Fisher.weight01=as.numeric(x$Fisher.weight01)
+  return(x)
+} )
+
+GO_res_table_betweenspecies=lapply(GO_res_table_betweenspecies,function(x){
+  x$Fisher.classic.padj=p.adjust(as.numeric(x$Fisher.classic),"BH")
+  return(x)
+} )
+
+GOSig_betweenspecies=sapply(GO_res_table_betweenspecies[1:2],function(x) which(x$Fisher.weight01<0.05))
+
+for (i in 1:length(GO_res_table_betweenspecies)){
+  write.table(GO_res_table_betweenspecies[[i]][order(GO_res_table_betweenspecies[[i]]$`Rank in Fisher.weight01`),],
+              file = paste0("../output/BetweenSpec_DE_analysis/GO_enrichment/",names(GO_res_table_betweenspecies)[i],".txt"),
+              quote = F,row.names = F,sep="\t")  
+}
+
+
+
+```
+
+## Estimates of parallelism on gene ontology
+
+### Jaccard Index
+
+#### Within a population
+```{r}
+ind=combinations(10,2,set=TRUE, repeats.allowed=FALSE)
+ja_go_withinpop=c()
+goIntersectWithinpop=c()
+for (j in 1:45) {
+  inte=length(intersect(unlist(GOSig_withinpop[ind[j,1]]),unlist(GOSig_withinpop[ind[j,2]])))
+  uni=length(union(unlist(GOSig_withinpop[ind[j,1]]),unlist(GOSig_withinpop[ind[j,2]])))
+  ja_go_withinpop[j]=inte/uni
+  goIntersectWithinpop=c(goIntersectWithinpop,inte)
+}
+max(goIntersectWithinpop)
+min(goIntersectWithinpop)
+
+```
+
+#### Between a population
+```{r}
+ind=combinations(3,2,set=TRUE, repeats.allowed=FALSE)
+ja_go_betweenpop=c()
+goIntersectBetweenpop=c()
+for (j in 1:3) {
+  inte=length(intersect(unlist(GOSig_betweenpop[ind[j,1]]),unlist(GOSig_betweenpop[ind[j,2]])))
+  uni=length(union(unlist(GOSig_betweenpop[ind[j,1]]),unlist(GOSig_betweenpop[ind[j,2]])))
+  ja_go_betweenpop[j]=inte/uni
+  goIntersectBetweenpop=c(goIntersectBetweenpop,inte)
+}
+
+max(goIntersectBetweenpop)
+min(goIntersectBetweenpop)
+
+
+
+```
+
+#### between species
+```{r}
+AnB <- length(intersect(GOSig_betweenspecies$sim, GOSig_betweenspecies$mel)) 
+AuB <- length(union(GOSig_betweenspecies$sim, GOSig_betweenspecies$mel))
+ja_go_betweenspecies <- AnB/AuB
+ja_go_betweenspecies
+
+```
+
+#### Statistical testing
+
+##### Prepare data frame
+
+```{r}
+#direction included in one factor
+JIDataGo <- data.frame(
+  JI = c(
+  ja_go_withinpop,
+  ja_go_betweenpop,
+  ja_go_betweenspecies),
+  DivergenceLevel = c(
+    rep("WithinPopulation", length(ja_ge_withinpop)),
+    rep("BetweenPopulation", length(ja_ge_betweenpop)),
+    rep("BetweenSpecies", length(ja_ge_betweenspecies)))
+)
+JIDataGo$DivergenceLevel <- factor(JIDataGo$DivergenceLevel, levels = c("WithinPopulation", "BetweenPopulation", "BetweenSpecies"))
+head(JIDataGo)
+
+```
+
+##### Wilcox test
+
+```{r}
+pvalGo <- c(0,0,0)
+#pvalGo[1] <- wilcox.test(
+#  y = subset(JIDataGo, DivergenceLevel == "WithinPopulation")$JI, 
+#  x = subset(JIDataGo, DivergenceLevel == "BetweenPopulation")$JI, 
+#  alternative = "less")$p.value
+pvalGo[1] <- wilcox.test(
+  x = subset(JIDataGo, DivergenceLevel == "WithinPopulation")$JI, 
+  mu = mean(subset(JIDataGo, DivergenceLevel == "BetweenPopulation")$JI), 
+  alternative = "greater")$p.value
+pvalGo[2] <- wilcox.test(
+  x = subset(JIDataGo, DivergenceLevel == "BetweenPopulation")$JI, 
+  mu = subset(JIDataGo, DivergenceLevel == "BetweenSpecies")$JI, 
+  alternative = "greater")$p.value
+pvalGo[3] <- wilcox.test(
+  x = subset(JIDataGo, DivergenceLevel == "WithinPopulation")$JI, 
+  mu = subset(JIDataGo, DivergenceLevel == "BetweenSpecies")$JI, 
+  alternative = "greater")$p.value
+pvalGo <- p.adjust(pvalGo, "bonferroni")
+names(pvalGo) <- c("WP_BP_go", "BP_BS_go", "WP_BS_go")
+pvalGo
+```
+
+#### Permutation 
+
+```{r}
+permutationed_jamean_go_withinpop <- c()
+ind=combinations(10,3,set=TRUE, repeats.allowed=FALSE)
+for(i in 1:nrow(ind)){
+  temp_GO_number_withinpop <- GOSig_withinpop[ind[i,]]
+  indin=combinations(3,2,set=TRUE, repeats.allowed=FALSE)
+  temp_ja <- c()
+  for (j in 1:3) {
+    inte=length(intersect(unlist(temp_GO_number_withinpop[indin[j,1]]),unlist(temp_GO_number_withinpop[indin[j,2]])))
+    uni=length(union(unlist(temp_GO_number_withinpop[indin[j,1]]),unlist(temp_GO_number_withinpop[indin[j,2]])))
+    temp_ja[j]=inte/uni
+  }
+  permutationed_jamean_go_withinpop <- c(permutationed_jamean_go_withinpop, mean(temp_ja))
+
+}
+length(permutationed_jamean_go_withinpop)
+min(permutationed_jamean_go_withinpop)
+
+
+#how often are the permutationed mean values higher than the mean of between population and species
+table(permutationed_jamean_go_withinpop < mean(ja_go_betweenpop)) 
+sum((permutationed_jamean_go_withinpop < mean(ja_go_betweenpop)))/length(permutationed_jamean_go_withinpop)
+
+table(permutationed_jamean_go_withinpop < mean(ja_go_betweenspecies))
+sum((permutationed_jamean_go_withinpop < mean(ja_go_betweenspecies)))/length(permutationed_jamean_go_withinpop)
+
+
+#Visualisation 
+permutationed_jamean_go_withinpop <- as.data.frame(permutationed_jamean_go_withinpop)
+permutJIGO <- ggplot(data = permutationed_jamean_go_withinpop, aes(x = permutationed_jamean_go_withinpop)) +
+  #geom_density(bins = 100, fill = viridis(n=4, alpha = 0.5)[1], color = viridis(n=4)[1]) +
+  geom_histogram(binwidth = 0.01, fill = hcl.colors(palette = "RdYlGn", alpha = 0.5, n = 10)[1], color = hcl.colors(palette = "RdYlGn", alpha = 0.5, n = 10)[1]) +
+  geom_vline(xintercept = mean(ja_go_betweenspecies), color = hcl.colors(palette = "RdYlGn", n = 10)[9], linetype= "dashed", size = 2) + 
+  geom_vline(xintercept = mean(ja_go_betweenpop), color = hcl.colors(palette = "RdYlGn", n = 10)[4], linetype= "dashed", size = 2) +
+  geom_vline(xintercept = mean(permutationed_jamean_go_withinpop$permutationed_jamean_go_withinpop), color = hcl.colors(palette = "RdYlGn", n = 10)[1], linetype= "dashed", size = 2) +
+  theme_minimal() +
+  ylab("Count") +
+  xlab("Jaccard index")
+permutJIGO
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/ParallelEstimatesAcrossDivergance/permutJIGO.tiff", height = 15, width = 15, units = "cm", res =300)
+permutJIGO
+dev.off()
+
+# Plot all the permutation togeather
+
+```
+
+#### Plot
+
+```{r}
+
+pvalGo
+JIGo <-ggplot(JIDataGo, aes(x =, DivergenceLevel, y = JI, color = DivergenceLevel, fill = DivergenceLevel)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.2, size = 2) +
+  theme_minimal() +
+  scale_fill_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 10, alpha = 0.4)[c(1,4,9)]) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 10)[c(1,4,9)]) +
+  scale_shape_manual(
+    values = c(1,16)) +
+    theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15),
+        legend.position = "none") +
+  scale_x_discrete(labels=c('Within Population', 'Between Population', 'Between Species')) +
+  xlab("") +
+  geom_signif(comparisons = list(
+    c("WithinPopulation", "BetweenPopulation")),
+    annotations = format(pvalGo[1], scientific = T, digits = 2),  color = "black", y_position = 0.35, textsize=4) +
+  geom_signif(comparisons = list(
+    c("BetweenPopulation", "BetweenSpecies")),
+    annotations = format(pvalGo[2], scientific = T, digits = 2),  color = "black", y_position = 0.32, textsize=4) +
+  geom_signif(comparisons = list(
+    c("BetweenSpecies","WithinPopulation")),
+    annotations = format(pvalGo[3], scientific = T, digits = 2),  color = "black", y_position = 0.38, textsize=4)
+JIGo
+
+```
+
+# Combine the three hierarcies
+
+## Prepare the data
+
+```{r}
+  JIgene = c(
+    ja_ge_withinpop,
+    ja_ge_betweenpop,
+    ja_ge_betweenspecies)
+  JIgo = c(
+    ja_go_withinpop,
+    ja_go_betweenpop,
+    ja_go_betweenspecies)
+  
+JIDataAll <- data.frame(
+  JI = c(JIgene, JIgo),
+  BioLevel = rep(c("Gene", "GO"), each =length(JIgene)),
+  DivergenceLevel = factor(rep(c(
+    rep("Within Population", length(ja_go_withinpop)),
+    rep("Between Populations", length(ja_go_betweenpop)),
+    rep("Between Species", length(ja_go_betweenspecies))), 2))
+)
+
+
+
+pvalues <- c(pvalGene, pvalGo)
+
+JIDataAll$DivergenceLevel <- factor(JIDataAll$DivergenceLevel, levels = c("Within Population", "Between Populations", "Between Species"))
+JIDataAll$BioLevel <- factor(JIDataAll$BioLevel, levels = c("Gene", "GO", "Tissue"))
+
+head(JIDataAll)
+
+
+JIDataAllPlot <- 
+  JIDataAll %>% 
+  dplyr::group_by(DivergenceLevel, BioLevel) %>%
+  dplyr::summarise(meanJI = mean(JI),
+                    sdJI = sd(JI))
+JIDataAllPlot
+```
+
+## Plot all hierarchy
+
+```{r}
+
+
+y_position=c(0.5, 0.3, 0.575, 0.475, 0.375, 0.55, 1.05, 0.9, 1.125)
+
+
+gene <-ggplot(JIDataAllPlot[JIDataAllPlot$BioLevel == "Gene", ], aes(x = DivergenceLevel, y = meanJI, color = DivergenceLevel, fill = DivergenceLevel)) +
+  geom_bar(stat="identity", width=0.8) +
+  geom_jitter(data =JIDataAll[JIDataAll$BioLevel == "Gene", ], aes(x =, DivergenceLevel, y = JI, color = DivergenceLevel, fill = DivergenceLevel), width = 0.2, size = 2) +
+  theme_minimal() +
+  scale_fill_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 10, alpha = 0.4)[c(1,4,9)]) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 10)[c(1,4,9)]) +
+  theme(axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15),
+        axis.text.x = element_blank(),
+        plot.title = element_text(size=15, face="italic"),
+        strip.text.x = element_text(
+        size = 12, face = "bold", hjust = 0),
+        plot.margin = margin(1.5,0.5,0.5,0.5, "cm")) +
+  geom_signif(comparisons = list(
+    c("Within Population","Between Populations")),
+    annotations = format(pvalues[1], scientific = T, digits = 2),  color = "black", y_position = y_position[1], textsize=4) +
+  geom_signif(comparisons = list(
+    c("Between Populations","Between Species")),
+    annotations = format(pvalues[2], scientific = T, digits = 2),  color = "black", y_position = y_position[2], textsize=4) +
+  geom_signif(comparisons = list(
+    c("Within Population","Between Species")),
+    annotations = format(pvalues[3], scientific = T, digits = 2),  color = "black", y_position = y_position[3], textsize=4) +
+  xlab("Divergence level") +
+  ylab("Jaccard index") +
+  ggtitle("Genes") +
+  ylim(0,0.7)
+gene 
+
+
+go <-ggplot(JIDataAllPlot[JIDataAllPlot$BioLevel == "GO", ], aes(x = DivergenceLevel, y = meanJI, color = DivergenceLevel, fill = DivergenceLevel)) +
+  geom_bar(stat="identity", width=0.8) +
+  geom_jitter(data =JIDataAll[JIDataAll$BioLevel == "GO", ], aes(x =, DivergenceLevel, y = JI, color = DivergenceLevel, fill = DivergenceLevel), width = 0.2, size = 2) +
+  theme_minimal() +
+  scale_fill_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 10, alpha = 0.4)[c(1,4,9)]) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 10)[c(1,4,9)]) +
+
+  theme(axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15),
+        axis.text.x = element_blank(),
+        plot.title = element_text(size=15, face="italic"),
+        strip.text.x = element_text(
+        size = 12, face = "bold", hjust = 0),
+        plot.margin = margin(1.5,0.5,0.5,0.5, "cm")) +
+  geom_signif(comparisons = list(
+    c("Within Population","Between Populations")),
+    annotations = format(pvalues[4], scientific = T, digits = 2),  color = "black", y_position = y_position[4], textsize=4) +
+  geom_signif(comparisons = list(
+    c("Between Populations","Between Species")),
+    annotations = format(pvalues[5], scientific = T, digits = 2),  color = "black", y_position = y_position[5], textsize=4) +
+  geom_signif(comparisons = list(
+    c("Within Population","Between Species")),
+    annotations = format(pvalues[6], scientific = T, digits = 2),  color = "black", y_position = y_position[6], textsize=4) +
+  xlab("Divergence level") +
+  ylab("Jaccard index") +
+  ggtitle("Gene ontology") +
+  ylim(0,0.70)
+go 
+
+
+all <- ggarrange(gene + rremove("ylab") + rremove("xlab"), 
+                 go + rremove("ylab") + rremove("xlab"), 
+                 #tiss + rremove("ylab") + rremove("xlab"), # remove axis labels from plots
+                 labels = c("A","B"), 
+                 ncol = 2, nrow = 1,
+                 align = "hv",
+                 common.legend = TRUE, legend = "bottom",
+                 font.label = list(size = 20, color = "black", face = "bold", family = NULL, position = "top"))
+
+allAnnotated <- annotate_figure(all, 
+                                left = textGrob("Jaccard index", rot = 90, vjust = 1, gp = gpar(cex = 1.3)))
+
+#allAnnotated <- annotate_figure(all, 
+#                                left = textGrob("Jaccard index", rot = 90, vjust = 1, gp = gpar(cex = 1.3)),
+#                                bottom = textGrob("Divergence level", gp = gpar(cex = 1.3)))
+allAnnotated
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/JIforAllHierarcies01ForAllHierarchi.tiff", height = 15, width = 25, units = "cm", res =300)
+allAnnotated
+dev.off()
+
+```
+
+
+## Plot correlation between gene and go
+
+```{r}
+corgenego <- data.frame(JIgene, JIgo, DivergenceLevel = c(
+    rep("WithinPopulation", 45),
+    rep("BetweenPopulation", 3),
+    rep("BetweenSpecies", 1)))
+cor.test(corgenego$JIgene, corgenego$JIgo, method = "spearman")
+
+corgenego$DivergenceLevel <- factor(corgenego$DivergenceLevel, levels = c("WithinPopulation", "BetweenPopulation", "BetweenSpecies"))
+
+corplotgenego <- ggplot(data = corgenego, aes(x = JIgene, y = JIgo, color = DivergenceLevel)) +
+  geom_point(size = 3) +
+    theme(axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15),
+        axis.text.x = element_blank(),
+        plot.title = element_text(size=15, face="italic"),
+        strip.text.x = element_text(
+        size = 12, face = "bold", hjust = 0)) +
+  scale_x_discrete(labels=c('Within Population', 'Between Populations', 'Between Species')) +
+  scale_fill_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 10, alpha = 0.4)[c(1,4,9)]) +
+  scale_color_manual(
+    values = hcl.colors(palette = "RdYlGn", n = 10)[c(1,4,9)]) +
+  theme_minimal() +
+  ylab("Jaccard Index (GO)") +
+  xlab("Jaccard Index (Gene)") 
+  
+tesxtforgenego <- grobTree(textGrob(
+  "Spearman's rho = 0.55 (pvalue = 3.57e-05)", 
+  x=0.6,  y=0.15, hjust=0,
+  gp=gpar(col="black", fontsize=10, fontface="italic")))
+
+corplotgenego <- corplotgenego + annotation_custom(tesxtforgenego)
+
+corplotgenego 
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/JIcorrGeneGo.tiff", height = 15, width = 25, units = "cm", res =300)
+corplotgenego
+dev.off()
+
+
+```
+
+# GO term logFC correlation 
+
+## Extract genes within each GO term and save in a list
+
+
+```{r}
+
+allGO = genesInTerm(tgd) #tgd is just a temp object of a gene ontology which I can use to extract the genes within each go term
+length(allGO) #it is the same length (meaning nr of go terms) as the row number of a go result table
+allGos <- names(allGO)
+
+#to check if the effect of the high correlation (that I saw later), is due to small # of genes in the GO terms, I will subsample to the min number of genes in a go term in all of them and redo the analysis.
+
+#minNrGenes <- sapply(allGO, length)
+#table(minNrGenes)
+
+random_subsample <- function(vec) {
+  if (length(vec) >= 8) { #as the min number is 5, set the number to sample to 5
+    return(sample(vec, 8))
+  } #else {
+    #return(vec)  # If the vector has less than 5 elements, return the original vector
+  #}
+}
+
+#allGO <- lapply(allGO, random_subsample)
+
+# Remove empty vectors
+#allGO <- Filter(function(x) length(x) > 0, allGO)
+
+# Print the filtered list
+#print(allGO)
+#length(allGO)
+#allGos <- names(allGO)
+
+
+```
+
+## Make a list of logFCs for each comparisons to be able to correlate within each go term
+
+### within population
+```{r}
+
+#fc
+withinAllGo <- c()
+for(go in allGos){
+  goselect <- lapply(flores_list, function(df) df[allGO[[go]], ])
+  logFC_matrix_withinpop=sapply(goselect[1:10],function(x) x$logFC)
+  logFC_cor_vector_withinpop <- cor(logFC_matrix_withinpop, method = "spearman")[lower.tri(cor(logFC_matrix_withinpop))]
+  #withinAllGo <- c(withinAllGo, mean(logFC_cor_vector_withinpop))
+  withinAllGo <- c(withinAllGo, sample(logFC_cor_vector_withinpop, size = 1))
+  
+} 
+names(withinAllGo) <- allGos
+
+
+```
+
+### between population
+
+```{r}
+
+#fc
+betweenpAllGo <- c()
+for(go in allGos){
+  goselect <- lapply(res_list, function(df) df[allGO[[go]], ])
+  logFC_matrix_betweenpop=sapply(goselect[1:3],function(x) x$logFC)
+  logFC_cor_vector_betweenpop <- cor(logFC_matrix_betweenpop, method = "spearman")[lower.tri(cor(logFC_matrix_betweenpop))]
+  #betweenpAllGo <- c(betweenpAllGo, mean(logFC_cor_vector_betweenpop))
+  betweenpAllGo <- c(betweenpAllGo, sample(logFC_cor_vector_betweenpop, size = 1))
+
+} 
+names(betweenpAllGo) <- allGos
+
+```
+
+### between species
+
+```{r}
+#fc
+betweensAllGo <- c()
+for(go in allGos){
+  logFC_cor_vector_betweenspecies <- cor(simres_table_HB[allGO[[go]],]$logFC, melres_table_HB[allGO[[go]],]$logFC, method = "spearman")
+  betweensAllGo <- c(betweensAllGo, logFC_cor_vector_betweenspecies)
+
+} 
+names(betweensAllGo) <- allGos
+
+
+
+```
+
+## Visualise
+
+How are the correlation within each go term distributed, for each divergence level?
+
+```{r}
+
+
+goCorrAllDiverg <- data.frame(GOTerm = rep(allGos, 3), rho = abs(c(withinAllGo, betweenpAllGo, betweensAllGo)), divergenceLevel = rep(c("WithinPopulation", "BetweenPopulations", "BetweenSpecies"), each = length(allGos)))
+goCorrAllDiverg$divergenceLevel <- factor(goCorrAllDiverg$divergenceLevel, levels = c("WithinPopulation", "BetweenPopulations", "BetweenSpecies"))
+goCorrDist <- ggplot(goCorrAllDiverg, aes(x = rho, group = divergenceLevel, colour = divergenceLevel)) +
+  geom_density(size = 1.5) +
+  theme_minimal() + 
+  scale_color_manual(values = hcl.colors(palette = "RdYlGn", n = 10)[c(1,4,9)],  name = "Divergence level") +
+  #scale_color_manual(values = viridis(n=4), name = "Divergence level") +
+    theme(axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),  
+        axis.title.x = element_text(size=12),
+        axis.title.y = element_text(size=12),
+        plot.margin = margin(1.25,0.25,0.25,0.25, "cm")) +
+  geom_vline(xintercept = c(mean(withinAllGo), mean(betweenpAllGo), mean(betweensAllGo)), linetype = c("dashed", "dashed", "dashed"), colour = hcl.colors(palette = "RdYlGn", n = 10)[c(1,4,9)], size = 1) +
+  #geom_vline(xintercept = c(mean(withinAllGo), mean(betweenpAllGo), mean(betweensAllGo)), linetype = c("dashed", "dashed", "dashed"), colour = hcl.colors(palette = "PuOr", n = 10)[c(1,4,8)], size = 1) +
+  xlab("Spearman's rho")
+goCorrDist
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/gologFCrhoDistributionsRandomSamp.tiff", height = 15, width = 25, units = "cm", res =300)
+goCorrDist
+dev.off()
+
+
+```
+
+
+## How much % of the go terms are shared across binned GO terms by correlation coefficients (of logFC)
+
+```{r}
+
+nrGenes <- unlist(lapply(allGO, length))
+
+num_bins <- 20
+dt1 <- data.table(GOTerm = allGos, rho = abs(withinAllGo), divergenceLevel = rep("WithinPopulation", length(allGos)), nrGenesinGo = nrGenes)
+dt1 <- dt1[order(rho, decreasing = T), ]
+dt1 <-  dt1 %>% mutate(rho_bin = ntile(rho, n=num_bins))
+#dt1 <- dt1 %>% mutate(rho_bin = cut(rho, breaks=num_bins))
+#dt1$rho_bin <- as.character(dt1$rho_bin)
+
+dt2 <- data.table(GOTerm = allGos, rho = abs(betweenpAllGo), divergenceLevel = rep("BetweenPopulations", length(allGos)), nrGenesinGo = nrGenes)
+dt2 <- dt2[order(rho, decreasing = T), ]
+dt2 <-  dt2 %>% mutate(rho_bin = ntile(rho, n=num_bins))
+#dt2 <- dt2 %>% mutate(rho_bin = cut(rho, breaks=num_bins))
+#dt2$rho_bin <- as.character(dt2$rho_bin)
+
+dt3 <- data.table(GOTerm = allGos, rho = abs(betweensAllGo), divergenceLevel = rep("BetweenSpecies", length(allGos)), nrGenesinGo = nrGenes)
+dt3 <- dt3[order(rho, decreasing = T), ]
+dt3 <-  dt3 %>% mutate(rho_bin = ntile(rho, n=num_bins))
+#dt3 <- dt3 %>% mutate(rho_bin = cut(rho, breaks=num_bins))
+#dt3$rho_bin <- as.character(dt3$rho_bin)
+
+
+shared <- list() # the number of shared GO terms across all divergence levels in each bin
+perShared <- c() # the % per bin of shared GO term
+meanNrGOWithinP <- c()
+meanNrGOBetweenP <- c()
+meanNrGOBetweenS <- c()
+medianNrGOWithinP <- c()
+medianNrGOBetweenP <- c()
+medianNrGOBetweenS <- c()
+#bins <- unique(dt1$rho_bin)
+for(i in 1:num_bins) {
+  shared[[i]] <- unique(c(
+   intersect(dt1[rho_bin == i, ]$GOTerm, dt2[rho_bin == i, ]$GOTerm),
+   intersect(dt1[rho_bin == i, ]$GOTerm, dt3[rho_bin == i, ]$GOTerm),
+   intersect(dt2[rho_bin == i, ]$GOTerm, dt3[rho_bin == i, ]$GOTerm))
+  )
+  #shared[[i]] <- intersect(intersect(dt1[rho_bin == i, ]$GOTerm, dt2[rho_bin == i, ]$GOTerm), dt3[rho_bin == i, ]$GOTerm)
+  perShared <- c(perShared, length(shared[[i]])/(nrow(dt1[rho_bin == i, ])))
+  #perShared <- c(perShared, length(shared[[i]])/length(unique(c(dt1[rho_bin == bins[i], ]$GOTerm, dt2[rho_bin == bins[i], ]$GOTerm, dt3[rho_bin == bins[i], ]$GOTerm))))
+  meanNrGOWithinP <- c(meanNrGOWithinP, mean(dt1[rho_bin == i, ]$nrGenesinGo))
+  meanNrGOBetweenP <- c(meanNrGOBetweenP, mean(dt2[rho_bin == i, ]$nrGenesinGo))
+  meanNrGOBetweenS <- c(meanNrGOBetweenS, mean(dt3[rho_bin == i, ]$nrGenesinGo))
+  medianNrGOWithinP <- c(medianNrGOWithinP, median(dt1[rho_bin == i, ]$nrGenesinGo))
+  medianNrGOBetweenP <- c(medianNrGOBetweenP, median(dt2[rho_bin == i, ]$nrGenesinGo))
+  medianNrGOBetweenS <- c(medianNrGOBetweenS, median(dt3[rho_bin == i, ]$nrGenesinGo))
+}
+
+names(perShared) <- 1:num_bins
+perShared <- as.data.frame(perShared)
+perShared$rhoBin <- 1:num_bins
+
+
+persentageShared <- ggplot(perShared, aes(x = rhoBin, y = perShared)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  ylab("% of shared GO terms between >= 2 divergence levels") +
+  xlab("Bins (Spearman's rho)") +
+  theme(axis.text.x = element_text(size=10),
+    axis.text.y = element_text(size=10),  
+    axis.title.x = element_text(size=12),
+    axis.title.y = element_text(size=12))
+persentageShared
+
+topBinSharedGO <- intersect(intersect(dt1[rho_bin == num_bins, ]$GOTerm, dt2[rho_bin == num_bins, ]$GOTerm), dt3[rho_bin == num_bins, ]$GOTerm)
+GO_res_table_betweenspecies[[1]][GO_res_table_betweenspecies[[1]]$GO.ID %in% topBinSharedGO, ]$Term
+
+bottomBinSharedGO <- intersect(intersect(dt1[rho_bin == 1, ]$GOTerm, dt2[rho_bin == 1, ]$GOTerm), dt3[rho_bin == 1, ]$GOTerm)
+GO_res_table_betweenspecies[[1]][GO_res_table_betweenspecies[[1]]$GO.ID %in% bottomBinSharedGO, ]$Term
+
+
+
+(data.table(GOterm = GO_res_table_betweenspecies[[1]][GO_res_table_betweenspecies[[1]]$GO.ID %in% shared[[num_bins]], ]$Term, GOID = GO_res_table_betweenspecies[[1]][GO_res_table_betweenspecies[[1]]$GO.ID %in% shared[[num_bins]], ]$GO.ID))
+
+duplicated(GO_res_table_betweenspecies[[1]][GO_res_table_betweenspecies[[1]]$GO.ID %in% shared[[num_bins]], ]$Term)
+
+##between all 
+Top05P_withinPop <- GO_res_table_betweenspecies[[1]][GO_res_table_betweenspecies[[1]]$GO.ID %in% dt1[rho_bin == num_bins, ]$GOTerm, ]$GO.ID
+Top05P_betweenPop <- GO_res_table_betweenspecies[[1]][GO_res_table_betweenspecies[[1]]$GO.ID %in% dt2[rho_bin == num_bins, ]$GOTerm, ]$GO.ID
+Top05P_betweenSpec <- GO_res_table_betweenspecies[[1]][GO_res_table_betweenspecies[[1]]$GO.ID %in% dt3[rho_bin == num_bins, ]$GOTerm, ]$GO.ID
+
+Top05p_shared <- intersect(Top05P_withinPop, intersect(Top05P_betweenPop, Top05P_betweenSpec))
+length(Top05p_shared)
+
+(data.table(GOterm = GO_res_table_betweenspecies[[1]][GO_res_table_betweenspecies[[1]]$GO.ID %in% Top05p_shared, ]$Term, GOID = GO_res_table_betweenspecies[[1]][GO_res_table_betweenspecies[[1]]$GO.ID %in% Top05p_shared, ]$GO.ID))
+
+inmanuscript <- c("GO:0006102", "GO:0006754", "GO:1901475", "GO:0034514", "GO:0006120", "GO:0006123", "GO:0090141", "GO:0006677", "GO:0006684", "GO:0019367", "GO:0019400", "GO:0046459", "GO:1901568", "GO:0007035", "GO:0051452","GO:0051452", "GO:0019363", "GO:0009145", "GO:0060261", "GO:2001022", "GO:2000104", "GO:0099565", "GO:0048172", "GO:0048052", "GO:0099565", "GO:0150011")
+table(Top05p_shared %in% inmanuscript)
+
+#lofFC for these terms
+```
+
+#extracting the upper part of the correlation matrix
+
+```{r}
+#extracting the upper part of the correlation matrix
+allGO
+head(allGO)
+sharedGoAllGO <- allGO[Top05p_shared]
+  
+forAllGo05Shared_logFCwithinPop <- sapply(flores_list[1:10],function(x) x$logFC)
+row.names(forAllGo05Shared_logFCwithinPop) <- row.names(flores_list$evo_r1)
+a <- data.frame(row.names = Top05p_shared, matrix(ncol = 10, nrow = 20))
+colnames(a) <- colnames(forAllGo05Shared_logFCwithinPop)
+
+
+forAllGo05Shared_logFCbetweenPop=sapply(res_list[1:3],function(x) x$logFC)
+row.names(forAllGo05Shared_logFCbetweenPop) <- row.names(res_list$evo_Fl)
+b <- data.frame(row.names = Top05p_shared, matrix(ncol = 3, nrow = 20))
+colnames(b) <- colnames(forAllGo05Shared_logFCbetweenPop)
+
+forAllGo05Shared_logFCbetweenSpec <- data.frame(evo_melanogaster = melres_table_HB[,]$logFC, evo_simulans = simres_table_HB[,]$logFC)
+row.names(forAllGo05Shared_logFCbetweenSpec) <- row.names(simres_table_HB)
+c <- data.frame(row.names = Top05p_shared, matrix(ncol = 2, nrow = 20))
+colnames(c) <- colnames(forAllGo05Shared_logFCbetweenSpec)
+
+
+genesInSharedGo <- c()
+for(go in Top05p_shared) {
+  genes <- intersect(allGO[[go]], row.names(forAllGo05Shared_logFCwithinPop))
+  #genesInSharedGo <- c(genesInSharedGo, intersect(allGO[[go]], row.names(forAllGo05Shared_logFCwithinPop)))
+  a[go, ] <- colMeans(abs(forAllGo05Shared_logFCwithinPop[genes, ]))
+  b[go, ] <- colMeans(abs(forAllGo05Shared_logFCbetweenPop[genes, ]))
+  c[go, ] <- colMeans(abs(forAllGo05Shared_logFCbetweenSpec[genes, ]))
+}
+genesInSharedGo <- unique(genesInSharedGo)
+
+a <- data.frame(forAllGo05Shared_logFCwithinPop[genesInSharedGo, ])
+aa <- data.frame(forAllGo05Shared_logFCwithinPop) 
+b <- data.frame(forAllGo05Shared_logFCbetweenPop[genesInSharedGo, ])
+bb <- data.frame(forAllGo05Shared_logFCbetweenPop)
+c <- data.frame(forAllGo05Shared_logFCbetweenSpec[genesInSharedGo, ])
+cc <- data.frame(forAllGo05Shared_logFCbetweenSpec)
+
+nrAllGenes <- nrow(forAllGo05Shared_logFCbetweenSpec)
+
+library(tidyverse)
+#a <- a %>% rownames_to_column(var = "GO_term")
+a <- a %>% rownames_to_column(var = "gene")
+# Reshape the data frame
+a_long <- a %>%
+  pivot_longer(cols = starts_with("evo_r"),
+               names_to = "evo",
+               values_to = "logFC")
+wilcox.test(x = rowMeans(a[,2:11]), mu = 0, alternative = "greater")
+
+a_long$DivergenceLevel <- rep("WithinPopulation", 89*10)
+a_long$group <- rep("SharedGoGenes", 89*10)
+
+aa <- aa %>% rownames_to_column(var = "gene")
+aa_long <- aa %>%
+  pivot_longer(cols = starts_with("evo_r"),
+               names_to = "evo",
+               values_to = "logFC")
+aa_long$DivergenceLevel <- rep("WithinPopulation", nrAllGenes*10)
+aa_long$group <- rep("allGenes", nrAllGenes*10)
+
+
+b <- b %>% rownames_to_column(var = "gene")
+b_long <- b %>%
+  pivot_longer(cols = starts_with("evo_"),
+               names_to = "evo",
+               values_to = "logFC")
+wilcox.test(x = rowMeans(b[2:4]), mu = 0, alternative = "greater")
+
+b_long$DivergenceLevel <- rep("BetweenPopulations", 89*3)
+b_long$group <- rep("SharedGoGenes", 89*3)
+
+bb <- bb %>% rownames_to_column(var = "gene")
+bb_long <- bb %>%
+  pivot_longer(cols = starts_with("evo_"),
+               names_to = "evo",
+               values_to = "logFC")
+
+bb_long$DivergenceLevel <- rep("BetweenPopulations", nrAllGenes*3)
+bb_long$group <- rep("allGenes", nrAllGenes*3)
+
+
+
+c <- c %>% rownames_to_column(var = "gene")
+c_long <- c %>%
+  pivot_longer(cols = starts_with("evo_"),
+               names_to = "evo",
+               values_to = "logFC")
+wilcox.test(x = rowMeans(c[2:3]), mu = 0, alternative = "greater")
+
+c_long$DivergenceLevel <- rep("BetweenSpecies", 89*2)
+c_long$group <- rep("SharedGoGenes", 89*2)
+
+cc <- cc %>% rownames_to_column(var = "gene")
+cc_long <- cc %>%
+  pivot_longer(cols = starts_with("evo_"),
+               names_to = "evo",
+               values_to = "logFC")
+cc_long$DivergenceLevel <- rep("BetweenSpecies", nrAllGenes*2)
+cc_long$group <- rep("allGenes", nrAllGenes*2)
+
+logFCforSharedGo <- rbind(a_long, b_long, c_long)
+
+ababy <- ggplot(rbind(a_long, aa_long), aes(x=logFC, linetype = group, group = group))+
+  geom_density(size = 2, colour = hcl.colors(palette = "RdYlGn", n = 10)[1]) +
+  scale_linetype_manual(values = c( "dashed", "solid")) +
+  theme_minimal()
+ababy
+
+bbaby <- ggplot(rbind(b_long, bb_long), aes(x=logFC, linetype = group, group = group))+
+  geom_density(size = 2, colour = hcl.colors(palette = "RdYlGn", n = 10)[4]) +
+  scale_linetype_manual(values = c( "dashed", "solid")) +
+  theme_minimal()
+bbaby
+cbaby <- ggplot(rbind(c_long, cc_long), aes(x=logFC, linetype = group, group = group))+
+  geom_density(size = 2, colour = hcl.colors(palette = "RdYlGn", n = 10)[9])+
+  scale_linetype_manual(values = c( "dashed", "solid")) +
+  theme_minimal()
+
+logFCofGoShared <- ggarrange(ababy,bbaby, cbaby,
+                    labels = c("A","B", "C"), 
+                    ncol = 3, nrow = 1,
+                    #align = "hv",
+                    common.legend = T, legend = "bottom",
+                    font.label = list(size = 15, color = "black", face = "bold", family = NULL, position = "top" ))
+
+logFCofGoShared
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/logFCofSharedGoTermGenesin05rhoranked.tiff", height = 15, width = 35, units = "cm", res =300)
+logFCofGoShared
+dev.off()
+
+
+
+
+```
+
+
+Does the number of genes median or mean correlate with the % of sharing?
+
+```{r}
+
+
+nrGenesInGODf <- data.frame(rho_bin = rep(1:num_bins, 3),
+                            meanOfGeneNrinGo = c(meanNrGOWithinP, meanNrGOBetweenP, meanNrGOBetweenS), 
+                            medianOfGeneNrinGo = c(medianNrGOWithinP, medianNrGOBetweenP, medianNrGOBetweenS),
+                            divergenceLevel = rep(c("WithinPopulation", "BetweenPopulations", "BetweenSpecies"), each = 20))
+nrGenesInGODf$divergenceLevel <- as.factor(nrGenesInGODf$divergenceLevel)
+nrGenesInGODfMean <- nrGenesInGODf %>% group_by(divergenceLevel) %>% plyr::summarize(Mean_rho = mean(meanOfGeneNrinGo, na.rm=TRUE))
+
+meanNrGenes <- nrGenesInGODf %>%
+  group_by(rho_bin) %>%
+  summarize(mean_nrgenes = mean(meanOfGeneNrinGo, na.rm = TRUE))
+
+
+persentageShared 
+perShared$averageNumberOfGenes <- meanNrGenes$mean_nrgenes
+str(perShared)
+ggplot(perShared, aes(x = rhoBin, y = perShared)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+
+  ylab("% of shared GO terms between >= 2 divergence levels") +
+  theme(axis.text.x = element_text(size=10),
+    axis.text.y = element_text(size=10),  
+    axis.title.x = element_text(size=12),
+    axis.title.y = element_text(size=12)) +
+  geom_line(aes(x = rhoBin, y = averageNumberOfGenes)) +
+  scale_y_continuous("mean(# of genes in GO term",  sec.axis = sec_axis(~.*10), name = "averageNumberOfGenes") +
+  scale_x_continuous("Bins (Spearman's rho)", breaks = 1:20) +
+  theme_minimal()
+
+crazyplot <- ggplot(perShared, aes(x=rhoBin)) +
+  geom_line( aes(y=perShared), color = viridis(n=15)[8], size = 1.5) + 
+  geom_point( aes(y=perShared), color = viridis(n=15)[8], size = 2) + 
+  geom_line( aes(y=averageNumberOfGenes/500), linetype = "dashed", color = viridis(n=15)[12], size = 1.5) +
+  scale_y_continuous(
+    # Features of the first axis
+    name = "% of shared GO terms between >= 2 divergence levels",
+    # Add a second axis and specify its features
+    sec.axis = sec_axis(~.*500, name="mean(# of genes in GO term)", )
+  ) +
+  #theme_ipsum() +
+  xlab("Bins (Spearman's rho)") +
+  theme_minimal() +
+    theme(axis.text.x = element_text(size=10),
+    axis.text.y = element_text(size=10),
+    axis.text.y.right = element_text(size=10),
+    axis.title.x = element_text(size=12),
+    axis.title.y = element_text(size=12, color = viridis(n=15)[8]),
+    axis.title.y.right = element_text(size=12, color = viridis(n=15)[12]),
+    plot.margin = margin(1.25,0.25,0.25,0.25, "cm"))
+  crazyplot
+
+  #theme(
+  #  axis.title.y = element_text(color = viridis(n=8)[1], size=13),
+  #  axis.title.y.right = element_text(color = viridis(n=8)[4], size=13)
+  #) +
+
+crazyplot <- ggplot(perShared, aes(x=rhoBin)) +
+  geom_line( aes(y=perShared), color = viridis(n=15)[8], size = 1.5) + 
+  geom_point( aes(y=perShared), color = viridis(n=15)[8], size = 2) + 
+  geom_line( aes(y=averageNumberOfGenes/500), linetype = "dashed", color = viridis(n=15)[12], size = 1.5) +
+  scale_y_continuous(
+    # Features of the first axis
+    name = "% of shared GO terms between >= 2 divergence levels",
+    # Add a second axis and specify its features
+    sec.axis = sec_axis(~.*500, name="mean(# of genes in GO term)", )
+  ) +
+  #theme_ipsum() +
+  xlab("Bins (Spearman's rho)") +
+  theme_minimal() +
+    theme(axis.text.x = element_text(size=10),
+    axis.text.y = element_text(size=10),
+    axis.text.y.right = element_text(size=10),
+    axis.title.x = element_text(size=12),
+    axis.title.y = element_text(size=12, color = viridis(n=15)[8]),
+    axis.title.y.right = element_text(size=12, color = viridis(n=15)[12]),
+    plot.margin = margin(1.25,0.25,0.25,0.25, "cm"))
+  crazyplot
+
+```
+
+
+is there a correlation between nr of genes in each term and rho?
+
+```{r}
+nrGenes <- unlist(lapply(allGO, length))
+nrGenesRhoCorr <- data.frame(nrGenes = nrGenes, 
+                             rhoWithin = dt1[order(GOTerm), ]$rho, 
+                             rhoBetweenPop = dt2[order(GOTerm), ]$rho, 
+                             rhoBetweenSpec = dt3[order(GOTerm), ]$rho,
+                             binWithin = dt1[order(GOTerm), ]$rho_bin,
+                             binBetweenPop = dt2[order(GOTerm), ]$rho_bin,
+                             binBetweenSpec = dt3[order(GOTerm), ]$rho_bin)
+
+a <- ggplot(nrGenesRhoCorr, aes(y = nrGenes, x = rhoWithin)) +
+  geom_point() +
+  theme_minimal() +
+  ylab("Number of genes in GO term") +
+  xlab("Spearman's rho (logFC) in a GO within population")
+cor.test(nrGenesRhoCorr$nrGenes, nrGenesRhoCorr$rhoWithin, method = "spearman")
+
+b <- ggplot(nrGenesRhoCorr, aes(y = nrGenes, x = rhoBetweenPop)) +
+  geom_point() +
+  theme_minimal() +
+  ylab("Number of genes in GO term") +
+  xlab("Spearman's rho (logFC) in a GO between populations")
+cor.test(nrGenesRhoCorr$nrGenes, nrGenesRhoCorr$rhoBetweenPop, method = "spearman")
+
+c <- ggplot(nrGenesRhoCorr, aes(y = nrGenes, x = rhoBetweenSpec)) +
+  geom_point() +
+  theme_minimal() +
+  ylab("Number of genes in GO term") +
+  xlab("Spearman's rho (logFC) in a GO between species")
+
+cor.test(nrGenesRhoCorr$nrGenes, nrGenesRhoCorr$rhoBetweenSpec, method = "spearman")
+
+rhoNnrGenes <- ggarrange(a,b, c,
+                    labels = c("A","B", "C"), 
+                    ncol = 3, nrow = 1,
+                    #align = "hv",
+                    #common.legend = T, legend = "bottom",
+                    font.label = list(size = 15, color = "black", face = "bold", family = NULL, position = "top" ))
+
+rhoNnrGenes
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/rhoAndNrOfGenesInGO.tiff", height = 15, width = 35, units = "cm", res =300)
+rhoNnrGenes
+dev.off()
+
+
+  
+```
+
+
+## Plot 
+```{r}
+goCorrPlot <- ggarrange(goCorrDist,
+                    persentageShared,
+                    labels = c("A","B"), 
+                    ncol = 2, nrow = 1,
+                    align = "hv",
+                    common.legend = T, legend = "bottom",
+                    font.label = list(size = 20, color = "black", face = "bold", family = NULL, position = "top"))
+
+goCorrPlot
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/goCorrPlot_supplimentarySampling.tiff", height = 15, width = 25, units = "cm", res =300)
+goCorrPlot
+dev.off()
+
+goCorrPlotWithNrGenes <- ggarrange(goCorrDist,
+                    crazyplot,
+                    labels = c("A","B"), 
+                    ncol = 2, nrow = 1,
+                    align = "hv",
+                    common.legend = T, legend = "bottom",
+                    font.label = list(size = 20, color = "black", face = "bold", family = NULL, position = "top"))
+
+goCorrPlotWithNrGenes
+
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/goCorrPlotWithNrGenes_supplimentarySampling.tiff", height = 15, width = 25, units = "cm", res =300)
+goCorrPlotWithNrGenes
+dev.off()
+
+
+ 
+
+
+```
+
+
+
+## To make sure its not the number of genes per term
+
+```{r} 
+allGO = genesInTerm(tgd) #tgd is just a temp object of a gene ontology which I can use to extract the genes within each go term
+length(allGO) #it is the same length (meaning nr of go terms) as the row number of a go result table
+allGos <- names(allGO)
+
+
+random_subsample <- function(vec) {
+  if (length(vec) >= 10) { #as the min number is 5, set the number to sample to 5
+    return(sample(vec, 10))
+  } #else {
+  #return(vec)  # If the vector has less than 5 elements, return the original vector
+  #}
+}
+
+# permutation
+num_bins <- 20
+nrIteration <- 50
+#nrGenesInGODf <- data.frame() 
+perSharedMaster <- data.frame()
+for(x in 1:nrIteration) { # this will iterate through the 1000 iteration 
+  perShared <- c()
+  print(x)
+  
+  allGOTemp <- lapply(allGO, random_subsample)
+  
+  # Remove empty vectors
+  allGOTemp <- Filter(function(x) length(x) > 0, allGOTemp)
+  
+  # Print the filtered list
+ # print("Number og Gene ontology terms: ", length(allGOTemp))
+  
+  # For looping
+  allGosTemp <- names(allGOTemp)
+  
+  #within
+  withinAllGo <- c() 
+  for(go in allGosTemp){
+    goselect <- lapply(flores_list, function(df) df[allGOTemp[[go]], ])
+    logFC_matrix_withinpop=sapply(goselect[1:10],function(x) x$logFC)
+    logFC_cor_vector_withinpop <- cor(logFC_matrix_withinpop, method = "spearman")[lower.tri(cor(logFC_matrix_withinpop))]
+    #withinAllGo <- c(withinAllGo, mean(logFC_cor_vector_withinpop))
+    withinAllGo <- c(withinAllGo, sample(logFC_cor_vector_withinpop, size = 1))
+    
+  } 
+  names(withinAllGo) <- allGosTemp
+
+  #fc
+  betweenpAllGo <- c()
+  for(go in allGosTemp){
+    goselect <- lapply(res_list, function(df) df[allGOTemp[[go]], ])
+    logFC_matrix_betweenpop=sapply(goselect[1:3],function(x) x$logFC)
+    logFC_cor_vector_betweenpop <- cor(logFC_matrix_betweenpop, method = "spearman")[lower.tri(cor(logFC_matrix_betweenpop))]
+    #betweenpAllGo <- c(betweenpAllGo, mean(logFC_cor_vector_betweenpop))
+    betweenpAllGo <- c(betweenpAllGo, sample(logFC_cor_vector_betweenpop, size = 1))
+    
+  } 
+  names(betweenpAllGo) <- allGosTemp
+
+
+  #fc
+  betweensAllGo <- c()
+  for(go in allGosTemp) {
+    logFC_cor_vector_betweenspecies <- cor(simres_table_HB[allGOTemp[[go]],]$logFC, melres_table_HB[allGOTemp[[go]],]$logFC, method = "spearman")
+    betweensAllGo <- c(betweensAllGo, logFC_cor_vector_betweenspecies)
+    
+  } 
+  names(betweensAllGo) <- allGosTemp
+
+  
+  nrGenes <- unlist(lapply(allGosTemp, length))
+  
+
+  tempdt1 <- data.table(GOTerm = allGosTemp, rho = abs(withinAllGo), divergenceLevel = rep("WithinPopulation", length(allGosTemp)), nrGenesinGo = nrGenes)
+  tempdt1 <- tempdt1[order(rho, decreasing = T), ]
+  tempdt1 <-  tempdt1 %>% mutate(rho_bin = ntile(rho, n=num_bins))
+
+  tempdt2 <- data.table(GOTerm = allGosTemp, rho = abs(betweenpAllGo), divergenceLevel = rep("BetweenPopulations", length(allGosTemp)), nrGenesinGo = nrGenes)
+  tempdt2 <- tempdt2[order(rho, decreasing = T), ]
+  tempdt2 <-  tempdt2 %>% mutate(rho_bin = ntile(rho, n=num_bins))
+
+  tempdt3 <- data.table(GOTerm = allGosTemp, rho = abs(betweensAllGo), divergenceLevel = rep("BetweenSpecies", length(allGosTemp)), nrGenesinGo = nrGenes)
+  tempdt3 <- tempdt3[order(rho, decreasing = T), ]
+  tempdt3 <-  tempdt3 %>% mutate(rho_bin = ntile(rho, n=num_bins))
+
+  
+  shared <- list() # the number of shared GO terms across all divergence levels in each bin
+  perShared <- c() # the % per bin of shared GO term
+  #meanNrGOWithinP <- c()
+  #meanNrGOBetweenP <- c()
+  #meanNrGOBetweenS <- c()
+  #medianNrGOWithinP <- c()
+  #medianNrGOBetweenP <- c()
+  #medianNrGOBetweenS <- c()
+  #bins <- unique(dt1$rho_bin)
+  for(i in 1:num_bins) {
+    # shared[[i]] <- unique(c(
+    #   intersect(dt1[rho_bin == bins[i], ]$GOTerm, dt2[rho_bin == bins[i], ]$GOTerm),
+    #   intersect(dt1[rho_bin == bins[i], ]$GOTerm, dt3[rho_bin == bins[i], ]$GOTerm),
+    #   intersect(dt2[rho_bin == bins[i], ]$GOTerm, dt3[rho_bin == bins[i], ]$GOTerm))
+    # )
+    shared[[i]] <- unique(c(
+      intersect(tempdt1[rho_bin == i, ]$GOTerm, tempdt2[rho_bin == i, ]$GOTerm),
+      intersect(tempdt1[rho_bin == i, ]$GOTerm, tempdt3[rho_bin == i, ]$GOTerm),
+      intersect(tempdt2[rho_bin == i, ]$GOTerm, tempdt3[rho_bin == i, ]$GOTerm))
+    )
+    #shared[[i]] <- intersect(intersect(dt1[rho_bin == i, ]$GOTerm, dt2[rho_bin == i, ]$GOTerm), dt3[rho_bin == i, ]$GOTerm)
+    perShared <- c(perShared, length(shared[[i]])/(nrow(tempdt1[rho_bin == i, ])))
+    #perShared <- c(perShared, length(shared[[i]])/length(unique(c(dt1[rho_bin == bins[i], ]$GOTerm, dt2[rho_bin == bins[i], ]$GOTerm, dt3[rho_bin == bins[i], ]$GOTerm))))
+    #meanNrGOWithinP <- c(meanNrGOWithinP, mean(tempdt1[rho_bin == i, ]$nrGenesinGo))
+    #meanNrGOBetweenP <- c(meanNrGOBetweenP, mean(tempdt2[rho_bin == i, ]$nrGenesinGo))
+    #meanNrGOBetweenS <- c(meanNrGOBetweenS, mean(tempdt3[rho_bin == i, ]$nrGenesinGo))
+    #medianNrGOWithinP <- c(medianNrGOWithinP, median(tempdt1[rho_bin == i, ]$nrGenesinGo))
+    #medianNrGOBetweenP <- c(medianNrGOBetweenP, median(tempdt2[rho_bin == i, ]$nrGenesinGo))
+    #medianNrGOBetweenS <- c(medianNrGOBetweenS, median(tempdt3[rho_bin == i, ]$nrGenesinGo))
+  }
+  
+  names(perShared) <- 1:num_bins
+  perShared <- as.data.frame(perShared)
+  perShared$rhoBin <- 1:num_bins
+  
+  perSharedMaster <- rbind(perSharedMaster, perShared)
+  
+  
+}
+
+str(perSharedMaster)
+
+head(perSharedMaster)
+perSharedMaster[1:100, ]
+perSharedMaster$rhoBin <- as.factor(perSharedMaster$rhoBin)
+                                
+permutedSharing <- ggplot(perSharedMaster, aes(y = perShared, x = rhoBin)) + 
+  geom_boxplot(fill = "gray") +
+  theme_minimal() +
+  ylab("% of shared GO terms between >= 2 divergence levels") +
+  xlab("Bins (Spearman's rho)") 
+  
+tiff("/Users/dagny/Dropbox (PopGen)/Dagny/Interspecific parallelism/output/boxplotSharingGOPermuted.tiff", height = 15, width = 25, units = "cm", res =300)
+permutedSharing
+dev.off()
+
+
+  
+```
+
+
